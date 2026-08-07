@@ -40,7 +40,8 @@ WITH cal AS (
 SELECT cal.calendar_date,
        k.close_value AS kospi,        (k.trade_date <> cal.calendar_date) AS kospi_carried,
        s.close_value AS spx,          (s.trade_date <> cal.calendar_date) AS spx_carried,
-       f.base_rate   AS usd_krw,      (f.rate_date  <> cal.calendar_date) AS usd_krw_carried
+       u.base_rate   AS usd_krw,      (u.rate_date  <> cal.calendar_date) AS usd_krw_carried,
+       j.base_rate   AS jpy_krw,      (j.rate_date  <> cal.calendar_date) AS jpy_krw_carried
   FROM cal
   LEFT JOIN LATERAL (SELECT close_value, trade_date FROM silver.market_indices_test m
                       WHERE m.index_code='KOSPI' AND m.trade_date <= cal.calendar_date
@@ -50,7 +51,12 @@ SELECT cal.calendar_date,
                       ORDER BY m.trade_date DESC LIMIT 1) s ON true
   LEFT JOIN LATERAL (SELECT base_rate, rate_date FROM silver.fx_exchange_rates_test x
                       WHERE x.currency_code='USD' AND x.rate_date <= cal.calendar_date
-                      ORDER BY x.rate_date DESC LIMIT 1) f ON true
+                      ORDER BY x.rate_date DESC LIMIT 1) u ON true
+  -- JPY 는 1엔당 원화다(고시는 100엔당이라 수집 시 ÷100 했다). USD 와 자릿수가
+  -- 100배 이상 차이나므로 한 그래프에 같은 축으로 올리면 엔화 선이 바닥에 붙는다.
+  LEFT JOIN LATERAL (SELECT base_rate, rate_date FROM silver.fx_exchange_rates_test x
+                      WHERE x.currency_code='JPY' AND x.rate_date <= cal.calendar_date
+                      ORDER BY x.rate_date DESC LIMIT 1) j ON true
  ORDER BY cal.calendar_date
 """
 
@@ -69,8 +75,8 @@ README = """수집 데이터 (ExchangeRate)
 내려받은 날: {today}
 
 ■ 파일
-  market_daily_wide.csv   차트용. 날짜 한 줄에 코스피·S&P500·환율이 다 있음.
-                          Excel 에서 A~F 열 잡고 바로 꺾은선 그래프가 됨.
+  market_daily_wide.csv   차트용. 날짜 한 줄에 코스피·S&P500·USD·JPY 가 다 있음.
+                          Excel 에서 범위 잡고 바로 꺾은선 그래프가 됨.
   market_indices.csv      지수 원본. 실제 거래일만 있음(휴일 행 없음).
   fx_rates.csv            환율 원본. 실제 고시일만 있음.
 
@@ -95,6 +101,14 @@ README = """수집 데이터 (ExchangeRate)
 
   5. 날짜는 각 거래소의 현지 거래일입니다. 한국 시간으로 변환하지 않았습니다.
      "S&P500 의 8월 1일 종가" 는 미국의 8월 1일 종가입니다.
+
+  6. jpy_krw 는 "1엔당 원화" 입니다.
+     수출입은행 고시는 100엔당(예: 895.51)으로 나오는데, 수집할 때 100 으로 나눠
+     1엔당(8.9551)으로 저장했습니다. 100엔 기준 값이 필요하면 x100 하세요.
+
+     차트에 올릴 때 주의: USD(약 1400)와 JPY(약 9)는 자릿수가 100배 이상
+     차이납니다. 같은 축에 그리면 엔화 선이 바닥에 붙어 안 보입니다.
+     보조축(2차 축)을 쓰거나 따로 그리세요.
 """
 
 
