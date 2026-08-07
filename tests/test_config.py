@@ -2,11 +2,25 @@
 import importlib
 
 from collector import config as config_module
-from collector.config import FX_TABLE, INDEX_TABLE, PROVISIONAL, TICKERS
+from collector.config import (
+    CURRENCIES,
+    FX_CURRENCY_CODES,
+    FX_TABLE,
+    INDEX_TABLE,
+    PROVISIONAL,
+    TICKERS,
+)
 
 
 def test_tickers_and_provisional_cover_same_codes():
     assert set(TICKERS) == set(PROVISIONAL) == {"SPX", "KOSPI"}
+
+
+def test_currencies_maps_jpy_100_unit_with_divisor_100():
+    """JPY(100) 을 빠뜨리거나 나누는 단위를 잘못 적으면 환율이 100배로 저장된다."""
+    assert CURRENCIES["JPY(100)"] == ("JPY", 100)
+    assert CURRENCIES["USD"] == ("USD", 1)
+    assert FX_CURRENCY_CODES == ["JPY", "USD"]
 
 
 def test_kospi_is_provisional_but_spx_is_not():

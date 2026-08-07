@@ -5,7 +5,7 @@ from decimal import Decimal
 from enum import Enum
 
 from . import alerts, db, sources
-from .config import FX_ENABLED, FX_TABLE, INDEX_TABLE, KST, PROVISIONAL
+from .config import FX_CURRENCY_CODES, FX_ENABLED, FX_TABLE, INDEX_TABLE, KST, PROVISIONAL
 from .logs import log as _log
 
 FX_BACKFILL_SLEEP_SECONDS = 0.2  # 한도를 급하게 태우지 않기 위한 호출 간 간격
@@ -74,35 +74,50 @@ def run_fx(*, now: datetime) -> int:
 
     today = now.date()
 
-    point = sources.fetch_fx(today)
+    rows = sources.fetch_fx(today)
 
     with db.connect() as conn:
-        previous = _latest_rate(conn) if point else None
-        written = 0
-        if point:
-            written = db.upsert_fx(conn, point, batch_id=batch_id)
+        # 통화별로 upsert 한다. USD 는 오는데 JPY 만 안 오는 상황을 신선도 검사가
+        # 잡아야 하므로, 이번에 안 온 통화도 포함해 FX_CURRENCY_CODES 전체를 검사한다.
+        written_by_currency: dict[str, int] = {}
+        warnings_by_currency: dict[str, str] = {}
+        for code, rate_date, base_rate, source in rows:
+            previous = _latest_rate(conn, code)
+            written_by_currency[code] = db.upsert_fx(
+                conn, (code, rate_date, base_rate, source), batch_id=batch_id
+            )
+            warning = alerts.check_outlier(previous, base_rate, threshold=FX_OUTLIER_THRESHOLD)
+            if warning:
+                warnings_by_currency[code] = warning
+        if rows:
             conn.commit()
-        latest = db.latest_date(conn, FX_TABLE, "currency_code", "USD", "rate_date")
-        alerts.check_freshness("FX", latest, now)
 
-    status = JobStatus.SUCCESS if point else JobStatus.MARKET_CLOSED
-    log_fields = {
-        "job": job, "batch_id": batch_id, "status": status.value,
-        "fetched": 1 if point else 0, "written": written,
-    }
-    if point:
-        warning = alerts.check_outlier(previous, point[2], threshold=FX_OUTLIER_THRESHOLD)
-        log_fields.update(rate_date=point[1], base_rate=point[2], warning=warning)
-    _log(**log_fields)
+        for code in FX_CURRENCY_CODES:
+            latest = db.latest_date(conn, FX_TABLE, "currency_code", code, "rate_date")
+            try:
+                alerts.check_freshness("FX", latest, now)
+            except alerts.BatchFailure as exc:
+                raise alerts.BatchFailure(f"{code}: {exc}") from exc
+
+    status = JobStatus.SUCCESS if rows else JobStatus.MARKET_CLOSED
+    _log(
+        job=job, batch_id=batch_id, status=status.value,
+        fetched=len(rows), written=written_by_currency,
+        rate_date=today if rows else None,
+        warnings=warnings_by_currency or None,
+    )
     return 0
 
 
 def run_fx_backfill(*, now: datetime, days: int, sleep_seconds: float = FX_BACKFILL_SLEEP_SECONDS) -> int:
     """오늘로부터 days 일 전까지 평일마다 fetch_fx 를 하나씩 호출해 채운다.
 
-    이미 적재된 날짜는 DB 에서 한 번에 읽어 호출 자체를 건너뛴다 -> 중단 후
-    재실행하면 이어서 진행된다. RateLimitError 는 실패가 아니라 "오늘 몫은
-    여기까지"라 종료코드 0으로 끝낸다.
+    이미 적재된 (통화, 날짜) 조합은 건너뛴다 -> USD 만 있고 JPY 가 없는 날짜는
+    여전히 pending 이라 fetch_fx 가 호출되고, 응답 중 이미 있는 통화(USD)만
+    다시 건너뛴다. 날짜만 보고 건너뛰면 USD 가 이미 찬 날짜 전체가 걸러져
+    JPY 백필이 한 건도 안 되므로, 판정은 반드시 (통화, 날짜) 단위여야 한다.
+
+    RateLimitError 는 실패가 아니라 "오늘 몫은 여기까지"라 종료코드 0으로 끝낸다.
     """
     job = "fx_backfill"
     batch_id = _batch_id(job, now)
@@ -120,8 +135,11 @@ def run_fx_backfill(*, now: datetime, days: int, sleep_seconds: float = FX_BACKF
     ]
 
     with db.connect() as conn:
-        existing = _existing_fx_dates(conn)
-        pending = [d for d in target_dates if d not in existing]
+        existing = _existing_fx_pairs(conn)
+        pending = [
+            d for d in target_dates
+            if any((code, d) not in existing for code in FX_CURRENCY_CODES)
+        ]
         already_loaded = len(target_dates) - len(pending)
 
         attempted = loaded = no_data = 0
@@ -130,7 +148,7 @@ def run_fx_backfill(*, now: datetime, days: int, sleep_seconds: float = FX_BACKF
 
         for d in pending:
             try:
-                point = sources.fetch_fx(d)
+                rows = sources.fetch_fx(d)
             except sources.RateLimitError as exc:
                 stopped_reason = f"일일 호출 한도 초과: {exc}. 재실행하면 이어서 진행됩니다."
                 break
@@ -144,11 +162,15 @@ def run_fx_backfill(*, now: datetime, days: int, sleep_seconds: float = FX_BACKF
 
             attempted += 1
             last_date = d
-            if point is None:
+            if not rows:
                 no_data += 1
             else:
-                db.upsert_fx(conn, point, batch_id=batch_id)
-                loaded += 1
+                for row in rows:
+                    code = row[0]
+                    if (code, d) in existing:
+                        continue  # 이 통화는 이 날짜에 이미 있다 (예: USD)
+                    db.upsert_fx(conn, row, batch_id=batch_id)
+                    loaded += 1
 
             if attempted % FX_BACKFILL_PROGRESS_EVERY == 0:
                 conn.commit()
@@ -168,10 +190,10 @@ def run_fx_backfill(*, now: datetime, days: int, sleep_seconds: float = FX_BACKF
     return 0
 
 
-def _existing_fx_dates(conn) -> set[date]:
+def _existing_fx_pairs(conn) -> set[tuple[str, date]]:
     with conn.cursor() as cur:
-        cur.execute(f"SELECT rate_date FROM {FX_TABLE} WHERE currency_code = 'USD'")
-        return {row[0] for row in cur.fetchall()}
+        cur.execute(f"SELECT currency_code, rate_date FROM {FX_TABLE}")
+        return {(row[0], row[1]) for row in cur.fetchall()}
 
 
 def _latest_close(conn, index_code: str) -> Decimal | None:
@@ -185,11 +207,12 @@ def _latest_close(conn, index_code: str) -> Decimal | None:
     return row[0] if row else None
 
 
-def _latest_rate(conn) -> Decimal | None:
+def _latest_rate(conn, currency_code: str) -> Decimal | None:
     with conn.cursor() as cur:
         cur.execute(
-            f"SELECT base_rate FROM {FX_TABLE} WHERE currency_code = 'USD' "
-            f"ORDER BY rate_date DESC LIMIT 1"
+            f"SELECT base_rate FROM {FX_TABLE} WHERE currency_code = %s "
+            f"ORDER BY rate_date DESC LIMIT 1",
+            (currency_code,),
         )
         row = cur.fetchone()
     return row[0] if row else None

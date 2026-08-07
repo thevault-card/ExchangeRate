@@ -17,6 +17,17 @@ FX_ENABLED = os.environ.get("FX_ENABLED", "false").strip().lower() in ("true", "
 FX_TABLE = "silver.fx_exchange_rates_test"
 INDEX_TABLE = "silver.market_indices_test"
 
+# 수출입은행 응답의 cur_unit -> (우리 통화코드, 나누는 단위)
+# JPY 는 cur_unit 이 'JPY(100)' 이고 값이 100엔당이라 100 으로 나눠 1엔당으로 만든다.
+# (스펙 §부록 A) 나누는 단위를 빠뜨리면 환율이 100배로 잘못 저장된다.
+CURRENCIES: dict[str, tuple[str, int]] = {
+    "USD": ("USD", 1),
+    "JPY(100)": ("JPY", 100),
+}
+
+# 통화별 신선도·이상치 판정, (통화, 날짜) 백필 판정에 쓰는 우리 통화코드 목록.
+FX_CURRENCY_CODES = sorted({code for code, _ in CURRENCIES.values()})
+
 # 우리 코드 안의 지수 코드 -> yfinance 티커
 TICKERS = {"SPX": "^GSPC", "KOSPI": "^KS11"}
 

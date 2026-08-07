@@ -13,7 +13,7 @@ import pandas as pd
 import requests
 import yfinance as yf
 
-from .config import EXIM_API_KEY, KST, TICKERS
+from .config import CURRENCIES, EXIM_API_KEY, KST, TICKERS
 from .logs import log
 
 IndexRow = tuple[str, date, Decimal, str]
@@ -98,8 +98,13 @@ def _is_retryable(exc: requests.RequestException) -> bool:
     return False
 
 
-def fetch_fx(rate_date: date) -> FxRow | None:
-    """USD 매매기준율 1건. 고시가 없는 날(주말·공휴일)이면 None."""
+def fetch_fx(rate_date: date) -> list[FxRow]:
+    """CURRENCIES 에 설정된 통화 전부의 매매기준율. 고시가 없는 날(주말·공휴일)이면 [].
+
+    응답에는 23개 통화가 한 번에 오므로(실측), 설정된 통화를 몇 개로 늘려도 API
+    호출은 늘지 않는다. 설정된 통화 중 응답에 없는 것이 있으면 조용히 빠지지
+    않고 SourceError 로 실패시킨다.
+    """
     error_type: str | None = None
     rows = None
     for attempt in range(_RETRY_ATTEMPTS):
@@ -130,8 +135,8 @@ def fetch_fx(rate_date: date) -> FxRow | None:
 
     if not rows:
         # 빈 배열은 '고시 없음'일 수도, 인증 오류일 수도 있다. 둘을 여기서 구분할 수
-        # 없으므로 None 을 돌려주고, 영업일 여부 판정은 alerts 가 한다. (스펙 §1-2 함정②)
-        return None
+        # 없으므로 빈 리스트를 돌려주고, 영업일 여부 판정은 alerts 가 한다. (스펙 §1-2 함정②)
+        return []
 
     for row in rows:
         code = row.get("result")
@@ -140,10 +145,18 @@ def fetch_fx(rate_date: date) -> FxRow | None:
         if code != 1:
             raise SourceError(f"수출입은행 result={code} ({_RESULT_MEANING.get(code, '알 수 없음')})")
 
-    usd = next((r for r in rows if r.get("cur_unit") == "USD"), None)
-    if usd is None:
-        raise SourceError("응답에 USD 가 없다")
+    points: list[FxRow] = []
+    for cur_unit, (our_code, divisor) in CURRENCIES.items():
+        matched = next((r for r in rows if r.get("cur_unit") == cur_unit), None)
+        if matched is None:
+            raise SourceError(f"응답에 {cur_unit} 가 없다")
 
-    # float() 을 쓰면 금액 정밀도가 깨진다. 콤마를 지우고 Decimal 로 만든다.
-    base_rate = Decimal(usd["deal_bas_r"].replace(",", ""))
-    return ("USD", rate_date, base_rate, "koreaexim")
+        # float() 을 쓰면 금액 정밀도가 깨진다. 콤마를 지우고 Decimal 로 만든다.
+        rate = Decimal(matched["deal_bas_r"].replace(",", ""))
+        if divisor != 1:
+            # JPY(100) 는 100엔당 값이라 나눠서 1엔당으로 정규화한다. Decimal 로
+            # 나눠야 한다 — float 을 거치면 895.51/100 같은 정확한 나눗셈도
+            # 부동소수 오차가 섞인다. (스펙 §부록 A)
+            rate = rate / Decimal(divisor)
+        points.append((our_code, rate_date, rate, "koreaexim"))
+    return points

@@ -95,10 +95,13 @@ def test_success_writes_row_and_exits_zero(job_conn, monkeypatch, capsys):
     assert row[0] == Decimal("5000.00")
 
 
+def _fx_rows(d, usd_rate="1300.00", jpy_rate="9.10", source="test"):
+    return [("USD", d, Decimal(usd_rate), source), ("JPY", d, Decimal(jpy_rate), source)]
+
+
 def test_run_fx_success_writes_row(job_conn, monkeypatch, capsys):
     monkeypatch.setattr(jobs, "FX_ENABLED", True)
-    point = ("USD", FUTURE, Decimal("1300.00"), "test")
-    monkeypatch.setattr(sources, "fetch_fx", lambda rate_date: point)
+    monkeypatch.setattr(sources, "fetch_fx", lambda rate_date: _fx_rows(FUTURE))
 
     rc = jobs.run_fx(now=datetime.now(KST))
 
@@ -108,12 +111,64 @@ def test_run_fx_success_writes_row(job_conn, monkeypatch, capsys):
 
     with job_conn.cursor() as cur:
         cur.execute(
-            f"SELECT base_rate FROM {FX_TABLE} WHERE currency_code='USD' AND rate_date=%s",
+            f"SELECT currency_code, base_rate FROM {FX_TABLE} WHERE rate_date=%s "
+            f"AND currency_code IN ('USD','JPY')",
             (FUTURE,),
         )
-        row = cur.fetchone()
-    assert row is not None
-    assert row[0] == Decimal("1300.00")
+        written = dict(cur.fetchall())
+    assert written == {"USD": Decimal("1300.00"), "JPY": Decimal("9.10")}
+
+
+def test_run_fx_log_shows_written_count_per_currency(job_conn, monkeypatch, capsys):
+    """설계 요구사항: 로그에 통화별 건수가 보여야 한다."""
+    monkeypatch.setattr(jobs, "FX_ENABLED", True)
+    monkeypatch.setattr(sources, "fetch_fx", lambda rate_date: _fx_rows(FUTURE))
+
+    rc = jobs.run_fx(now=datetime.now(KST))
+
+    assert rc == 0
+    log = _log_lines(capsys)[-1]
+    assert log["written"] == {"USD": 1, "JPY": 1}
+
+
+def test_run_fx_freshness_checked_per_currency(job_conn, monkeypatch, capsys):
+    """USD 는 최신인데 다른 통화가 하나도 없으면 실패해야 한다 -- 신선도 검사가
+    통화별로 도는지 확인한다. 실DB 의 JPY 이력에 의존하지 않도록(백필 전후 모두
+    안전하게) DB 에 절대 없는 가짜 통화코드를 설정에 임시로 끼워 넣는다."""
+    monkeypatch.setattr(jobs, "FX_ENABLED", True)
+    monkeypatch.setattr(jobs, "FX_CURRENCY_CODES", ["USD", "ZZZ"])
+    now = datetime.now(KST)
+    due = alerts.last_due_session("FX", now)
+    db.upsert_fx(job_conn, ("USD", due, Decimal("1400.00"), "seed"), batch_id="seed")
+
+    monkeypatch.setattr(sources, "fetch_fx", lambda d: [])
+
+    rc = jobs.run("fx_daily")
+
+    assert rc == 1
+    log = _log_lines(capsys)[-1]
+    assert log["status"] == "failure"
+    assert "ZZZ" in log["error"]
+
+
+def test_run_fx_outlier_checked_per_currency(job_conn, monkeypatch, capsys):
+    """USD 전일값과 JPY 신규값을 비교하면 무의미하다 -- 통화별로 비교해야 한다."""
+    monkeypatch.setattr(jobs, "FX_ENABLED", True)
+    yesterday = FUTURE - timedelta(days=1)
+    db.upsert_fx(job_conn, ("USD", yesterday, Decimal("1400.00"), "seed"), batch_id="seed")
+    db.upsert_fx(job_conn, ("JPY", yesterday, Decimal("9.00"), "seed"), batch_id="seed")
+
+    # USD 는 미미한 변동(이상치 아님), JPY 는 전일 대비 큰 변동(이상치)
+    rows = [("USD", FUTURE, Decimal("1410.00"), "test"), ("JPY", FUTURE, Decimal("15.00"), "test")]
+    monkeypatch.setattr(sources, "fetch_fx", lambda d: rows)
+
+    rc = jobs.run_fx(now=datetime.now(KST))
+
+    assert rc == 0
+    log = _log_lines(capsys)[-1]
+    warnings = log.get("warnings") or {}
+    assert "USD" not in warnings
+    assert "JPY" in warnings
 
 
 # --- MARKET_CLOSED / FAILURE ------------------------------------------------
@@ -227,8 +282,7 @@ def test_run_fx_skipped_when_disabled(monkeypatch, capsys):
 
 def test_run_fx_runs_normally_when_enabled(job_conn, monkeypatch, capsys):
     monkeypatch.setattr(jobs, "FX_ENABLED", True)
-    point = ("USD", FUTURE, Decimal("1300.00"), "test")
-    monkeypatch.setattr(sources, "fetch_fx", lambda rate_date: point)
+    monkeypatch.setattr(sources, "fetch_fx", lambda rate_date: _fx_rows(FUTURE))
 
     rc = jobs.run_fx(now=datetime.now(KST))
 
@@ -260,8 +314,8 @@ _BF_WEEKDAYS = [date(2099, 1, 9), date(2099, 1, 12), date(2099, 1, 13),
 _BF_WEEKEND = [date(2099, 1, 10), date(2099, 1, 11)]
 
 
-def _bf_point(d, rate="1400.00"):
-    return ("USD", d, Decimal(rate), "koreaexim")
+def _bf_rows(d, usd_rate="1400.00", jpy_rate="9.00"):
+    return [("USD", d, Decimal(usd_rate), "koreaexim"), ("JPY", d, Decimal(jpy_rate), "koreaexim")]
 
 
 @pytest.fixture
@@ -272,17 +326,18 @@ def no_sleep(monkeypatch):
 
 
 def test_fx_backfill_skips_already_loaded_dates(job_conn, monkeypatch, no_sleep, capsys):
-    """이미 적재된 날짜는 fetch_fx 를 호출하지 않는다 -- 재개 가능성의 핵심."""
+    """이미 (통화, 날짜) 둘 다 적재된 날짜는 fetch_fx 를 호출하지 않는다 -- 재개 가능성의 핵심."""
     monkeypatch.setattr(jobs, "FX_ENABLED", True)
     seeded = {date(2099, 1, 12), date(2099, 1, 13)}
     for d in seeded:
-        db.upsert_fx(job_conn, _bf_point(d), batch_id="seed")
+        for row in _bf_rows(d):
+            db.upsert_fx(job_conn, row, batch_id="seed")
 
     calls = []
 
     def fake_fetch_fx(d):
         calls.append(d)
-        return _bf_point(d)
+        return _bf_rows(d)
 
     monkeypatch.setattr(sources, "fetch_fx", fake_fetch_fx)
 
@@ -297,16 +352,51 @@ def test_fx_backfill_skips_already_loaded_dates(job_conn, monkeypatch, no_sleep,
     assert log["status"] == "success"
     assert log["already_loaded"] == 2
     assert log["attempted"] == 4
-    assert log["loaded"] == 4
+    assert log["loaded"] == 8  # 4 날짜 x 통화 2개
+
+
+def test_fx_backfill_fetches_missing_currency_even_when_other_currency_already_loaded(
+    job_conn, monkeypatch, no_sleep, capsys
+):
+    """USD 만 있고 JPY 가 없는 날짜는 여전히 pending 이어야 한다. 날짜만 보고
+    건너뛰면 USD 가 이미 찬 날짜 전체가 걸러져 JPY 백필이 한 건도 안 된다 --
+    이번 작업에서 제일 틀리기 쉬운 지점."""
+    monkeypatch.setattr(jobs, "FX_ENABLED", True)
+    partial_date = date(2099, 1, 12)
+    db.upsert_fx(job_conn, ("USD", partial_date, Decimal("1400.00"), "seed"), batch_id="seed")
+    # JPY 는 이 날짜에 시딩하지 않는다.
+
+    calls = []
+
+    def fake_fetch_fx(d):
+        calls.append(d)
+        return _bf_rows(d)
+
+    monkeypatch.setattr(sources, "fetch_fx", fake_fetch_fx)
+
+    rc = jobs.run_fx_backfill(now=_BF_NOW, days=_BF_DAYS)
+
+    assert rc == 0
+    assert partial_date in calls  # USD 만 있어도 fetch_fx 는 호출된다
+
+    with job_conn.cursor() as cur:
+        cur.execute(
+            f"SELECT currency_code, base_rate FROM {FX_TABLE} WHERE rate_date=%s "
+            f"AND currency_code IN ('USD','JPY')",
+            (partial_date,),
+        )
+        rows = dict(cur.fetchall())
+    assert rows["JPY"] == Decimal("9.00")   # 새로 채워졌다
+    assert rows["USD"] == Decimal("1400.00")  # 시딩값 그대로(같은 값이라 UPDATE 안 됨)
 
 
 def test_fx_backfill_none_response_is_skipped_and_continues(job_conn, monkeypatch, no_sleep, capsys):
-    """None(고시 없음)은 건너뛰고 계속 진행한다 -- 실패가 아니다."""
+    """빈 리스트(고시 없음)는 건너뛰고 계속 진행한다 -- 실패가 아니다."""
     monkeypatch.setattr(jobs, "FX_ENABLED", True)
     holiday = date(2099, 1, 13)
 
     def fake_fetch_fx(d):
-        return None if d == holiday else _bf_point(d)
+        return [] if d == holiday else _bf_rows(d)
 
     monkeypatch.setattr(sources, "fetch_fx", fake_fetch_fx)
 
@@ -316,7 +406,7 @@ def test_fx_backfill_none_response_is_skipped_and_continues(job_conn, monkeypatc
     log = _log_lines(capsys)[-1]
     assert log["status"] == "success"
     assert log["attempted"] == 6
-    assert log["loaded"] == 5
+    assert log["loaded"] == 10  # 5 날짜 x 통화 2개
     assert log["no_data"] == 1
 
     with job_conn.cursor() as cur:
@@ -339,7 +429,7 @@ def test_fx_backfill_rate_limit_stops_immediately_and_exits_zero(
         calls.append(d)
         if d == stop_at:
             raise sources.RateLimitError("일일제한 초과")
-        return _bf_point(d)
+        return _bf_rows(d)
 
     monkeypatch.setattr(sources, "fetch_fx", fake_fetch_fx)
 
@@ -350,7 +440,7 @@ def test_fx_backfill_rate_limit_stops_immediately_and_exits_zero(
 
     log = _log_lines(capsys)[-1]
     assert log["status"] == "rate_limited"
-    assert log["loaded"] == 2
+    assert log["loaded"] == 4  # 2 날짜 x 통화 2개
     assert log["stopped_reason"]
 
     with job_conn.cursor() as cur:
@@ -370,7 +460,7 @@ def test_fx_backfill_other_source_error_exits_one(job_conn, monkeypatch, no_slee
     def fake_fetch_fx(d):
         if d == fail_at:
             raise sources.SourceError("인증코드 오류")
-        return _bf_point(d)
+        return _bf_rows(d)
 
     monkeypatch.setattr(sources, "fetch_fx", fake_fetch_fx)
 
@@ -385,7 +475,7 @@ def test_fx_backfill_other_source_error_exits_one(job_conn, monkeypatch, no_slee
 def test_fx_backfill_sleep_is_injectable(job_conn, monkeypatch, no_sleep, capsys):
     """호출 사이 간격은 실제로 잠들지 않고 주입 가능해야 한다."""
     monkeypatch.setattr(jobs, "FX_ENABLED", True)
-    monkeypatch.setattr(sources, "fetch_fx", lambda d: _bf_point(d))
+    monkeypatch.setattr(sources, "fetch_fx", lambda d: _bf_rows(d))
 
     jobs.run_fx_backfill(now=_BF_NOW, days=_BF_DAYS, sleep_seconds=0.2)
 

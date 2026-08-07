@@ -110,29 +110,66 @@ def _usd(rate="1,385.20"):
     return {"result": 1, "cur_unit": "USD", "cur_nm": "미국 달러", "deal_bas_r": rate}
 
 
+def _jpy(rate="895.51"):
+    return {"result": 1, "cur_unit": "JPY(100)", "cur_nm": "일본 옌", "deal_bas_r": rate}
+
+
+def _by_code(points):
+    return {code: (code, rate_date, rate, source) for code, rate_date, rate, source in points}
+
+
 def test_fx_parses_comma_separated_rate(monkeypatch):
     """deal_bas_r 은 '1,385.20' 같은 콤마 포함 문자열이다. (스펙 §1-2 함정①)"""
-    monkeypatch.setattr(sources.requests, "get", lambda *a, **k: _Resp([_usd()]))
-    point = sources.fetch_fx(date(2026, 8, 3))
-    assert point == ("USD", date(2026, 8, 3), Decimal("1385.20"), "koreaexim")
-    assert isinstance(point[2], Decimal)
+    monkeypatch.setattr(sources.requests, "get", lambda *a, **k: _Resp([_usd(), _jpy()]))
+    points = sources.fetch_fx(date(2026, 8, 3))
+    usd = _by_code(points)["USD"]
+    assert usd == ("USD", date(2026, 8, 3), Decimal("1385.20"), "koreaexim")
+    assert isinstance(usd[2], Decimal)
+
+
+def test_fx_jpy_100_unit_is_normalized_to_per_1_jpy(monkeypatch):
+    """cur_unit 'JPY(100)' 은 100엔당 값이다. 895.51 -> 1엔당 8.9551 로 나눠 저장한다.
+    ÷100 을 빠뜨리면 환율이 100배로 잘못 저장된다. (스펙 §부록 A) 이 테스트가 이번
+    작업의 핵심이다."""
+    monkeypatch.setattr(sources.requests, "get", lambda *a, **k: _Resp([_usd(), _jpy("895.51")]))
+    points = sources.fetch_fx(date(2026, 8, 3))
+    jpy = _by_code(points)["JPY"]
+    assert jpy == ("JPY", date(2026, 8, 3), Decimal("8.9551"), "koreaexim")
+    assert isinstance(jpy[2], Decimal)
+
+
+def test_fx_usd_is_not_divided(monkeypatch):
+    """USD 는 나누는 단위가 1이라 원래 값 그대로 저장돼야 한다."""
+    monkeypatch.setattr(sources.requests, "get",
+                        lambda *a, **k: _Resp([_usd("1,418.80"), _jpy()]))
+    points = sources.fetch_fx(date(2026, 8, 3))
+    assert _by_code(points)["USD"][2] == Decimal("1418.80")
 
 
 def test_fx_filters_out_other_currencies(monkeypatch):
-    """응답에 40여 개 통화가 섞여 온다. (스펙 §1-2 함정③)"""
+    """응답에 20여 개 통화가 섞여 온다. 설정 안 된 통화(EUR)는 결과에 안 담긴다. (스펙 §1-2 함정③)"""
     payload = [
-        {"result": 1, "cur_unit": "JPY(100)", "deal_bas_r": "950.00"},
+        _jpy("950.00"),
         _usd(),
         {"result": 1, "cur_unit": "EUR", "deal_bas_r": "1,500.00"},
     ]
     monkeypatch.setattr(sources.requests, "get", lambda *a, **k: _Resp(payload))
-    assert sources.fetch_fx(date(2026, 8, 3))[2] == Decimal("1385.20")
+    points = sources.fetch_fx(date(2026, 8, 3))
+    assert _by_code(points)["USD"][2] == Decimal("1385.20")
+    assert set(_by_code(points)) == {"USD", "JPY"}
 
 
-def test_fx_empty_array_returns_none(monkeypatch):
+def test_fx_missing_configured_currency_raises(monkeypatch):
+    """설정된 통화(JPY) 가 응답에 없으면 조용히 빠지지 않고 SourceError 로 실패한다."""
+    monkeypatch.setattr(sources.requests, "get", lambda *a, **k: _Resp([_usd()]))
+    with pytest.raises(sources.SourceError):
+        sources.fetch_fx(date(2026, 8, 3))
+
+
+def test_fx_empty_array_returns_empty_list(monkeypatch):
     """주말·공휴일은 고시 자체가 없어 빈 배열이 온다. 이것만으로는 실패가 아니다."""
     monkeypatch.setattr(sources.requests, "get", lambda *a, **k: _Resp([]))
-    assert sources.fetch_fx(date(2026, 8, 2)) is None
+    assert sources.fetch_fx(date(2026, 8, 2)) == []
 
 
 @pytest.mark.parametrize("code", [2, 3, 4])
@@ -196,7 +233,7 @@ def test_fx_calls_current_domain(monkeypatch):
     def fake(url, **kwargs):
         seen["url"] = url
         seen["params"] = kwargs.get("params", {})
-        return _Resp([_usd()])
+        return _Resp([_usd(), _jpy()])
 
     monkeypatch.setattr(sources.requests, "get", fake)
     sources.fetch_fx(date(2026, 8, 3))
@@ -233,7 +270,7 @@ def test_fx_backoff_sequence_is_1_2_4():
 def test_fx_retries_5xx_twice_then_succeeds_on_third_call(monkeypatch):
     """5xx 2번 후 성공 -> 3번째 호출에서 값을 반환한다."""
     sleeps = _no_sleep(monkeypatch)
-    responses = [_FailResp(500), _FailResp(503), _Resp([_usd()])]
+    responses = [_FailResp(500), _FailResp(503), _Resp([_usd(), _jpy()])]
     calls = []
 
     def fake_get(*a, **k):
@@ -242,9 +279,9 @@ def test_fx_retries_5xx_twice_then_succeeds_on_third_call(monkeypatch):
 
     monkeypatch.setattr(sources.requests, "get", fake_get)
 
-    point = sources.fetch_fx(date(2026, 8, 3))
+    points = sources.fetch_fx(date(2026, 8, 3))
 
-    assert point == ("USD", date(2026, 8, 3), Decimal("1385.20"), "koreaexim")
+    assert _by_code(points)["USD"] == ("USD", date(2026, 8, 3), Decimal("1385.20"), "koreaexim")
     assert len(calls) == 3
     # 백오프는 1s, 2s 순서(+jitter). 3번째 시도가 성공해 4s 는 쓰이지 않는다.
     assert len(sleeps) == 2
@@ -309,7 +346,7 @@ def test_fx_non_retryable_4xx_calls_once(monkeypatch):
 
 def test_fx_429_is_retryable(monkeypatch):
     sleeps = _no_sleep(monkeypatch)
-    responses = [_FailResp(429), _Resp([_usd()])]
+    responses = [_FailResp(429), _Resp([_usd(), _jpy()])]
     calls = []
 
     def fake_get(*a, **k):
@@ -318,8 +355,8 @@ def test_fx_429_is_retryable(monkeypatch):
 
     monkeypatch.setattr(sources.requests, "get", fake_get)
 
-    point = sources.fetch_fx(date(2026, 8, 3))
+    points = sources.fetch_fx(date(2026, 8, 3))
 
-    assert point is not None
+    assert points != []
     assert len(calls) == 2
     assert len(sleeps) == 1
