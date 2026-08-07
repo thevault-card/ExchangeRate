@@ -42,14 +42,14 @@ SELECT cal.calendar_date,
  ORDER BY cal.calendar_date
 """
 
+# 원본 두 파일은 테이블 컬럼을 전부 내보낸다. 거버넌스 컬럼(created_at·batch_id)까지
+# 포함해야 DDL 과 1:1 로 대조가 된다.
 INDEX_SQL = """
-SELECT index_code, trade_date, close_value, source, is_provisional, updated_at
-  FROM silver.market_indices_test ORDER BY index_code, trade_date
+SELECT * FROM silver.market_indices_test ORDER BY index_code, trade_date
 """
 
 FX_SQL = """
-SELECT currency_code, rate_date, base_rate, source, updated_at
-  FROM silver.fx_exchange_rates_test ORDER BY rate_date
+SELECT * FROM silver.fx_exchange_rates_test ORDER BY rate_date
 """
 
 README = """수집 데이터 (ExchangeRate)
