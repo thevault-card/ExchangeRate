@@ -102,7 +102,7 @@ def main() -> int:
 
     stamp = "원본 값 유지" if job["keep_timestamps"] else "적재 시점(now())"
     if not args.commit:
-        print(f"\n[미리보기] --commit 이 없어 아무것도 쓰지 않았다.")
+        print("\n[미리보기] --commit 이 없어 아무것도 쓰지 않았다.")
         print(f"  넣으려는 행: {len(rows)}  (이미 있는 키는 건너뜀)")
         print(f"  created_at/updated_at: {stamp}")
         print(f"  created_batch_id/updated_batch_id: '{BATCH_ID}'")
