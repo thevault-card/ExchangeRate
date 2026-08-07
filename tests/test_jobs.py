@@ -247,3 +247,159 @@ def test_run_index_summary_log_includes_skipped_count(job_conn, monkeypatch, cap
 
     log = _log_lines(capsys)[-1]
     assert log["skipped"] == 3
+
+
+# --- fx_backfill -------------------------------------------------------------
+# 실DB 어디에도 없을 미래 평일 구간을 쓴다. 09(금) 10(토) 11(일) 12(월) 13(화)
+# 14(수) 15(목) 16(금) -> 평일만 골라내면 09,12,13,14,15,16 여섯 날짜다.
+
+_BF_NOW = datetime(2099, 1, 16, tzinfo=KST)
+_BF_DAYS = 7
+_BF_WEEKDAYS = [date(2099, 1, 9), date(2099, 1, 12), date(2099, 1, 13),
+               date(2099, 1, 14), date(2099, 1, 15), date(2099, 1, 16)]
+_BF_WEEKEND = [date(2099, 1, 10), date(2099, 1, 11)]
+
+
+def _bf_point(d, rate="1400.00"):
+    return ("USD", d, Decimal(rate), "koreaexim")
+
+
+@pytest.fixture
+def no_sleep(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(jobs.time, "sleep", lambda seconds: sleeps.append(seconds))
+    return sleeps
+
+
+def test_fx_backfill_skips_already_loaded_dates(job_conn, monkeypatch, no_sleep, capsys):
+    """이미 적재된 날짜는 fetch_fx 를 호출하지 않는다 -- 재개 가능성의 핵심."""
+    monkeypatch.setattr(jobs, "FX_ENABLED", True)
+    seeded = {date(2099, 1, 12), date(2099, 1, 13)}
+    for d in seeded:
+        db.upsert_fx(job_conn, _bf_point(d), batch_id="seed")
+
+    calls = []
+
+    def fake_fetch_fx(d):
+        calls.append(d)
+        return _bf_point(d)
+
+    monkeypatch.setattr(sources, "fetch_fx", fake_fetch_fx)
+
+    rc = jobs.run_fx_backfill(now=_BF_NOW, days=_BF_DAYS)
+
+    assert rc == 0
+    assert set(calls) == set(_BF_WEEKDAYS) - seeded
+    # 주말은 대상 자체가 아니다
+    assert not (set(calls) & set(_BF_WEEKEND))
+
+    log = _log_lines(capsys)[-1]
+    assert log["status"] == "success"
+    assert log["already_loaded"] == 2
+    assert log["attempted"] == 4
+    assert log["loaded"] == 4
+
+
+def test_fx_backfill_none_response_is_skipped_and_continues(job_conn, monkeypatch, no_sleep, capsys):
+    """None(고시 없음)은 건너뛰고 계속 진행한다 -- 실패가 아니다."""
+    monkeypatch.setattr(jobs, "FX_ENABLED", True)
+    holiday = date(2099, 1, 13)
+
+    def fake_fetch_fx(d):
+        return None if d == holiday else _bf_point(d)
+
+    monkeypatch.setattr(sources, "fetch_fx", fake_fetch_fx)
+
+    rc = jobs.run_fx_backfill(now=_BF_NOW, days=_BF_DAYS)
+
+    assert rc == 0
+    log = _log_lines(capsys)[-1]
+    assert log["status"] == "success"
+    assert log["attempted"] == 6
+    assert log["loaded"] == 5
+    assert log["no_data"] == 1
+
+    with job_conn.cursor() as cur:
+        cur.execute(
+            f"SELECT count(*) FROM {FX_TABLE} WHERE currency_code='USD' AND rate_date=%s",
+            (holiday,),
+        )
+        assert cur.fetchone()[0] == 0
+
+
+def test_fx_backfill_rate_limit_stops_immediately_and_exits_zero(
+    job_conn, monkeypatch, no_sleep, capsys
+):
+    """RateLimitError 를 만나면 즉시 멈추고 종료코드 0, 그때까지 받은 건 DB 에 남는다."""
+    monkeypatch.setattr(jobs, "FX_ENABLED", True)
+    stop_at = date(2099, 1, 13)  # 세 번째로 호출될 날짜
+    calls = []
+
+    def fake_fetch_fx(d):
+        calls.append(d)
+        if d == stop_at:
+            raise sources.RateLimitError("일일제한 초과")
+        return _bf_point(d)
+
+    monkeypatch.setattr(sources, "fetch_fx", fake_fetch_fx)
+
+    rc = jobs.run_fx_backfill(now=_BF_NOW, days=_BF_DAYS)
+
+    assert rc == 0
+    assert calls == [date(2099, 1, 9), date(2099, 1, 12), date(2099, 1, 13)]  # 그 이후는 안 부른다
+
+    log = _log_lines(capsys)[-1]
+    assert log["status"] == "rate_limited"
+    assert log["loaded"] == 2
+    assert log["stopped_reason"]
+
+    with job_conn.cursor() as cur:
+        cur.execute(
+            f"SELECT count(*) FROM {FX_TABLE} WHERE currency_code='USD' "
+            f"AND rate_date = ANY(%s)",
+            ([date(2099, 1, 9), date(2099, 1, 12)],),
+        )
+        assert cur.fetchone()[0] == 2  # 중단 전까지 받은 건 남아 있다
+
+
+def test_fx_backfill_other_source_error_exits_one(job_conn, monkeypatch, no_sleep, capsys):
+    """RateLimitError 가 아닌 SourceError 는 중단하고 실패(종료코드 1)다."""
+    monkeypatch.setattr(jobs, "FX_ENABLED", True)
+    fail_at = date(2099, 1, 12)
+
+    def fake_fetch_fx(d):
+        if d == fail_at:
+            raise sources.SourceError("인증코드 오류")
+        return _bf_point(d)
+
+    monkeypatch.setattr(sources, "fetch_fx", fake_fetch_fx)
+
+    rc = jobs.run_fx_backfill(now=_BF_NOW, days=_BF_DAYS)
+
+    assert rc == 1
+    log = _log_lines(capsys)[-1]
+    assert log["status"] == "failure"
+    assert "인증코드 오류" in log["error"]
+
+
+def test_fx_backfill_sleep_is_injectable(job_conn, monkeypatch, no_sleep, capsys):
+    """호출 사이 간격은 실제로 잠들지 않고 주입 가능해야 한다."""
+    monkeypatch.setattr(jobs, "FX_ENABLED", True)
+    monkeypatch.setattr(sources, "fetch_fx", lambda d: _bf_point(d))
+
+    jobs.run_fx_backfill(now=_BF_NOW, days=_BF_DAYS, sleep_seconds=0.2)
+
+    assert no_sleep == [0.2] * len(_BF_WEEKDAYS)
+
+
+def test_fx_backfill_skipped_when_fx_disabled(monkeypatch, capsys):
+    monkeypatch.setattr(jobs, "FX_ENABLED", False)
+    calls = []
+    monkeypatch.setattr(sources, "fetch_fx", lambda d: calls.append(d))
+
+    rc = jobs.run_fx_backfill(now=_BF_NOW, days=_BF_DAYS)
+
+    assert rc == 0
+    assert calls == []
+    log = _log_lines(capsys)[-1]
+    assert log["status"] == "skipped"

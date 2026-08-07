@@ -23,6 +23,11 @@ class SourceError(RuntimeError):
     """외부 소스가 실패로 응답했을 때. 재시도해도 소용없는 상황을 포함한다."""
 
 
+class RateLimitError(SourceError):
+    """수출입은행 일일 호출 한도 초과(result=4). 백필이 "오늘은 여기까지"를
+    "진짜 실패"와 구분할 수 있어야 해서 SourceError 와 별도로 잡을 수 있게 한다."""
+
+
 def fetch_index(index_code: str, lookback_days: int = 5) -> tuple[list[IndexRow], int]:
     """오늘로부터 lookback_days 일 전까지의 일별 종가 목록과 건너뛴 NaN 건수.
 
@@ -130,6 +135,8 @@ def fetch_fx(rate_date: date) -> FxRow | None:
 
     for row in rows:
         code = row.get("result")
+        if code == 4:
+            raise RateLimitError(f"수출입은행 result=4 ({_RESULT_MEANING[4]})")
         if code != 1:
             raise SourceError(f"수출입은행 result={code} ({_RESULT_MEANING.get(code, '알 수 없음')})")
 

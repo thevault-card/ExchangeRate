@@ -144,6 +144,25 @@ def test_fx_nonzero_result_code_raises(monkeypatch, code):
         sources.fetch_fx(date(2026, 8, 3))
 
 
+def test_fx_result_4_raises_rate_limit_error(monkeypatch):
+    """일일제한 초과(result=4)는 백필이 "오늘은 여기까지"로 구분해야 하므로
+    SourceError 가 아니라 그 하위 타입인 RateLimitError 여야 한다."""
+    monkeypatch.setattr(sources.requests, "get",
+                        lambda *a, **k: _Resp([{"result": 4, "cur_unit": "USD"}]))
+    with pytest.raises(sources.RateLimitError):
+        sources.fetch_fx(date(2026, 8, 3))
+
+
+def test_fx_result_3_is_not_rate_limit_error(monkeypatch):
+    """result=3(인증 오류)은 SourceError 이지만 RateLimitError 는 아니다 — 백필이
+    이 둘을 다르게 처리해야 한다."""
+    monkeypatch.setattr(sources.requests, "get",
+                        lambda *a, **k: _Resp([{"result": 3, "cur_unit": "USD"}]))
+    with pytest.raises(sources.SourceError) as exc_info:
+        sources.fetch_fx(date(2026, 8, 3))
+    assert not isinstance(exc_info.value, sources.RateLimitError)
+
+
 def test_fx_missing_usd_raises(monkeypatch):
     monkeypatch.setattr(sources.requests, "get",
                         lambda *a, **k: _Resp([{"result": 1, "cur_unit": "EUR",
