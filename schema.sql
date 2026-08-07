@@ -1,6 +1,9 @@
 -- ExchangeRate 수집 파이프라인 스키마
--- 기존 DB에 이미 만들어진 테이블 2개에 제약을 추가하고, gold 뷰를 만든다.
--- DBeaver에서 이 파일 전체를 실행한다. 여러 번 돌려도 안전하다.
+-- 전용 데이터베이스(exchangerate_dev)에서 이 파일 전체를 실행한다.
+-- 여러 번 돌려도 안전하다.
+--
+-- 컬럼 정의는 DBeaver 에서 만들었던 원본(docs/db.md §1)과 같고, 거기 없던
+-- 제약(PK·CHECK·NOT NULL)과 is_provisional 컬럼이 더해져 있다.
 
 CREATE SCHEMA IF NOT EXISTS silver;
 CREATE SCHEMA IF NOT EXISTS gold;
@@ -8,41 +11,36 @@ CREATE SCHEMA IF NOT EXISTS gold;
 -- 1. 환율 -------------------------------------------------------------
 -- PK 순서는 (currency_code, rate_date). 조회가 WHERE currency_code='USD'
 -- ORDER BY rate_date DESC 라서 뒤집으면 인덱스를 못 탄다. (스펙 §1-4)
-ALTER TABLE silver.fx_exchange_rates_test
-  ALTER COLUMN "source"   SET NOT NULL,
-  ALTER COLUMN created_at SET NOT NULL,
-  ALTER COLUMN updated_at SET NOT NULL;
-
-ALTER TABLE silver.fx_exchange_rates_test
-  DROP CONSTRAINT IF EXISTS pk_fx_exchange_rates_test;
-ALTER TABLE silver.fx_exchange_rates_test
-  ADD CONSTRAINT pk_fx_exchange_rates_test PRIMARY KEY (currency_code, rate_date);
-
-ALTER TABLE silver.fx_exchange_rates_test
-  DROP CONSTRAINT IF EXISTS ck_fx_base_rate_positive;
-ALTER TABLE silver.fx_exchange_rates_test
-  ADD CONSTRAINT ck_fx_base_rate_positive CHECK (base_rate > 0);
+-- 컬럼 나열 순서와 PK 컬럼 순서는 별개다.
+CREATE TABLE IF NOT EXISTS silver.fx_exchange_rates_test (
+    rate_date        date          NOT NULL,
+    currency_code    varchar(10)   NOT NULL,
+    base_rate        numeric(12,4) NOT NULL,
+    "source"         varchar(30)   NOT NULL,
+    created_at       timestamptz   NOT NULL DEFAULT now(),
+    updated_at       timestamptz   NOT NULL DEFAULT now(),
+    created_batch_id text,
+    updated_batch_id text,
+    CONSTRAINT pk_fx_exchange_rates_test PRIMARY KEY (currency_code, rate_date),
+    CONSTRAINT ck_fx_base_rate_positive CHECK (base_rate > 0)
+);
 
 -- 2. 시장지수 ---------------------------------------------------------
 -- is_provisional = "나중에 공식 확정값으로 덮일 예정인가"
 --   코스피(yfinance ^KS11) = true / S&P500(^GSPC) = false   (설계 §4-2)
-ALTER TABLE silver.market_indices_test
-  ADD COLUMN IF NOT EXISTS is_provisional boolean NOT NULL DEFAULT false;
-
-ALTER TABLE silver.market_indices_test
-  ALTER COLUMN "source"   SET NOT NULL,
-  ALTER COLUMN created_at SET NOT NULL,
-  ALTER COLUMN updated_at SET NOT NULL;
-
-ALTER TABLE silver.market_indices_test
-  DROP CONSTRAINT IF EXISTS pk_market_indices_test;
-ALTER TABLE silver.market_indices_test
-  ADD CONSTRAINT pk_market_indices_test PRIMARY KEY (index_code, trade_date);
-
-ALTER TABLE silver.market_indices_test
-  DROP CONSTRAINT IF EXISTS ck_market_close_positive;
-ALTER TABLE silver.market_indices_test
-  ADD CONSTRAINT ck_market_close_positive CHECK (close_value > 0);
+CREATE TABLE IF NOT EXISTS silver.market_indices_test (
+    index_code       varchar(10)   NOT NULL,
+    trade_date       date          NOT NULL,
+    close_value      numeric(14,2) NOT NULL,
+    "source"         varchar(30)   NOT NULL,
+    is_provisional   boolean       NOT NULL DEFAULT false,
+    created_at       timestamptz   NOT NULL DEFAULT now(),
+    updated_at       timestamptz   NOT NULL DEFAULT now(),
+    created_batch_id text,
+    updated_batch_id text,
+    CONSTRAINT pk_market_indices_test PRIMARY KEY (index_code, trade_date),
+    CONSTRAINT ck_market_close_positive CHECK (close_value > 0)
+);
 
 -- 3. gold 뷰 — carry-forward (설계 §7) --------------------------------
 -- 휴일에 장이 안 열려 값이 없는 날을 직전 거래일 값으로 채운다.

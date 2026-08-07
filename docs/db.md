@@ -1,11 +1,13 @@
 # DB 현황
 
 > 기록일: 2026-08-06 · 출처: DBeaver에 정의된 실제 테이블 (DDL 그대로 옮김)
-> 상태: **구조 인지 단계.** 적재는 아직 안 함 — 아래 §3은 적재 전에 상의해서 정한다.
+> 상태: **전용 데이터베이스 `exchangerate_dev`에 `schema.sql` 적용 완료** (2026-08-07). 수집 데이터는 기존 DB가 아니라 이 전용 DB에 담는다. 기존 DB의 `_test` 테이블 2개는 제약 없는 상태로 남겨두고 쓰지 않는다.
 
 ---
 
 ## 1. 현재 구조
+
+> 아래는 **기존(옛) DB**에 있던 테이블의 기록이다. 지금 수집 파이프라인이 쓰는 전용 DB(`exchangerate_dev`)의 스키마는 `schema.sql`을 참고한다.
 
 스키마 `silver`, 테이블 2개. 이름에 `_test` 접미사가 붙어 있다.
 
@@ -122,9 +124,9 @@ carry-forward 뷰 `gold.v_market_index_daily`(설계 §7)가 들어갈 `gold` �
 
 | 대상 | 상태 |
 |---|---|
-| `gold` 스키마 및 뷰 | 미생성 → §3-6 |
-| alembic 마이그레이션 | 미작성. 위 항목들이 정해지면 `0001_*.py` 하나로 |
-| 접속 정보 | `DATABASE_URL` 로 단일화 예정 (설계 P-3). 현재 미설정 |
+| `gold` 스키마 및 뷰 | **적용 완료** (2026-08-07, `exchangerate_dev`). `gold.v_market_index_daily` 존재, 데이터 없어 0행 |
+| alembic 마이그레이션 | 미작성. 원시 SQL(`schema.sql`)로 충분해 도입 보류 (계획 Tech Stack 참고) |
+| 접속 정보 | `DATABASE_URL` 로 단일화 완료. `exchangerate_dev`(포트 4123, 사용자 `postgres`) 가리킴, `.env`에 설정됨 |
 
 ---
 
