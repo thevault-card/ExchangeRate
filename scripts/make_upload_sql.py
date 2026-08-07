@@ -32,14 +32,22 @@ JOBS = {
                           f"'{BATCH_ID}', '{BATCH_ID}')"),
         "note": "created_at/updated_at 은 수집 당시 원본 값을 그대로 넣는다.",
     },
+    # 대상 silver.market_indices 는 8컬럼이라 is_provisional 이 없다. 출처(source)도
+    # 넣지 않기로 했다(2026-08-07 지시) — NULL 로 둔다.
+    #
+    # 대가: 코스피가 잠정치(yfinance, 공식 확정값 아님)라는 정보가 대상 DB 에 남지
+    # 않는다. 나중에 공공데이터포털 공식값으로 교체할 때 어느 행을 덮어야 하는지
+    # DB 만 봐서는 알 수 없다. 로컬 exchangerate_dev 에는 그대로 남아 있으므로
+    # 그쪽을 근거로 삼아야 한다.
     "index": {
-        "select": """SELECT index_code, trade_date, close_value, source, is_provisional
+        "select": """SELECT index_code, trade_date, close_value
                        FROM silver.market_indices_test ORDER BY index_code, trade_date""",
-        "cols": "index_code, trade_date, close_value, source, is_provisional, "
+        "cols": "index_code, trade_date, close_value, source, "
                 "created_at, updated_at, created_batch_id, updated_batch_id",
-        "row": lambda r: (f"('{r[0]}', '{r[1]}', {r[2]}, '{r[3]}', {str(r[4]).lower()}, "
+        "row": lambda r: (f"('{r[0]}', '{r[1]}', {r[2]}, NULL, "
                           f"now(), now(), '{BATCH_ID}', '{BATCH_ID}')"),
-        "note": "created_at/updated_at 은 실행 시점(now()) 이다. 원본 수집 시각은 넣지 않는다.",
+        "note": "created_at/updated_at 은 실행 시점(now()) 이다. source 는 NULL, "
+                "is_provisional 은 대상에 없어 넣지 않는다.",
     },
 }
 
