@@ -18,3 +18,17 @@ TICKERS = {"SPX": "^GSPC", "KOSPI": "^KS11"}
 
 # 코스피는 yfinance 값이 공식 확정값이 아니라 나중에 덮어쓸 예정이다. (설계 §4-2)
 PROVISIONAL = {"SPX": False, "KOSPI": True}
+
+# 우리 코드의 시장 코드 -> exchange_calendars 캘린더 코드
+# 환율(수출입은행)은 은행 영업일이 한국거래소 영업일과 사실상 같으므로 XKRX 로 근사한다.
+CALENDARS = {"SPX": "XNYS", "KOSPI": "XKRX", "FX": "XKRX"}
+
+# 세션 마감 후 소스에 데이터가 뜨기까지 주는 유예. 이 시간이 지나야
+# "그 세션은 당연히 있어야 한다" 고 판정한다.
+# 코스피 15:40 배치는 마감(15:30) 직후라 유예가 없으면 매번 거짓 실패한다.
+# 정확한 값은 5거래일 실측 후 조정한다(설계 §13 B-3).
+AVAILABILITY_GRACE = {
+    "SPX": timedelta(minutes=30),
+    "KOSPI": timedelta(minutes=30),
+    "FX": timedelta(minutes=30),
+}

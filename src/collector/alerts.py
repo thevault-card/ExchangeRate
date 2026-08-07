@@ -1,40 +1,78 @@
 """실패·경고 판정 (설계 §9-1).
 
 '조용히 안 쌓이는 것'이 가장 위험하다. 판정은 재량이 아니라 필수 요구사항이다.
+
+영업일 판정은 요일이 아니라 거래소 캘린더로 한다. "오늘이 영업일인가"를 묻지 않고
+"이 거래소의 가장 최근 마감 세션까지 우리가 갖고 있는가"를 묻는다 — 공휴일과 토요일
+실행(index_spx 는 06:30 KST 실행분이 미국 금요일 세션을 받는다)이 한 규칙으로 처리된다.
 """
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
+from functools import cache
+
+import exchange_calendars as xcals
+
+from .config import AVAILABILITY_GRACE, CALENDARS
 
 
 class BatchFailure(RuntimeError):
     """배치를 실패로 끝내야 하는 상황. 호출자는 종료코드 1로 나간다."""
 
 
-def is_business_day(day: date) -> bool:
-    # ponytail: 요일만 본다. 공휴일에는 오탐(경고)이 난다.
-    # 오탐이 거슬리면 holidays 패키지를 붙인다.
-    return day.weekday() < 5
+@cache
+def _calendar(market: str):
+    # exchange_calendars 캘린더 객체는 만드는 비용이 크다. 시장당 하나만 만든다.
+    return xcals.get_calendar(CALENDARS[market])
 
 
-def check_not_empty(rows, *, on: date, label: str) -> None:
-    """영업일인데 한 건도 못 받았으면 실패. 주말은 정상이다."""
-    if rows:
-        return
-    if is_business_day(on):
-        raise BatchFailure(f"{label}: 영업일({on})인데 0건")
+def is_session(market: str, day: date) -> bool:
+    """그 거래소가 그 날 열었는가."""
+    return bool(_calendar(market).is_session(day))
 
 
-def check_staleness(last_loaded: date | None, *, today: date, max_business_days: int = 3) -> None:
-    """마지막 적재일이 너무 오래됐으면 실패. 한 번도 안 쌓였으면 판정하지 않는다."""
+def last_due_session(market: str, now: datetime) -> date | None:
+    """마감 시각 + 유예가 이미 지난 세션 중 가장 최근 것.
+
+    이 날짜까지는 데이터가 있어야 정상이다. 아직 아무 세션도 안 지났으면 None.
+    연휴가 아무리 길어도 30일을 넘지 않으므로 최근 30일만 훑는다.
+    """
+    cal = _calendar(market)
+    grace = AVAILABILITY_GRACE[market]
+    sessions = cal.sessions_in_range(now.date() - timedelta(days=30), now.date())
+    due = None
+    for session in sessions:
+        if cal.session_close(session) + grace <= now:
+            due = session.date()
+    return due
+
+
+def check_freshness(market: str, latest_stored: date | None, now: datetime) -> None:
+    """마감·유예가 지난 세션까지 적재됐는지. 아니면 BatchFailure."""
+    due = last_due_session(market, now)
+    if due is None:
+        return  # 아직 아무 세션도 마감·유예를 안 지났다. 평가 대상이 없다.
+    if latest_stored is None or latest_stored < due:
+        raise BatchFailure(
+            f"{market}: 마감 세션 {due} 인데 최신 적재일이 {latest_stored}"
+        )
+
+
+def check_staleness(
+    market: str, last_loaded: date | None, *, now: datetime, max_sessions: int = 3
+) -> None:
+    """마지막 적재일이 너무 오래됐으면 실패. 한 번도 안 쌓였으면 판정하지 않는다.
+
+    요일이 아니라 거래소 세션 수로 센다. 연휴가 길어도 실제 마감된 세션이
+    max_sessions 개 미만이면 통과한다.
+    """
     if last_loaded is None:
         return
-    elapsed = sum(
-        1
-        for offset in range(1, (today - last_loaded).days + 1)
-        if is_business_day(last_loaded + timedelta(days=offset))
-    )
-    if elapsed >= max_business_days:
-        raise BatchFailure(f"마지막 적재일 {last_loaded} 이후 영업일 {elapsed}일 경과")
+    cal = _calendar(market)
+    grace = AVAILABILITY_GRACE[market]
+    sessions = cal.sessions_in_range(last_loaded + timedelta(days=1), now.date())
+    elapsed = sum(1 for session in sessions if cal.session_close(session) + grace <= now)
+    if elapsed >= max_sessions:
+        raise BatchFailure(f"마지막 적재일 {last_loaded} 이후 세션 {elapsed}개 경과")
 
 
 def check_outlier(previous: Decimal | None, current: Decimal, *, threshold: Decimal) -> str | None:
