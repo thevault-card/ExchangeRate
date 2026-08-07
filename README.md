@@ -18,6 +18,39 @@
 - `01_카드마스터_시세_정의서_draft.md`
 - `01_카드마스터_시세_ERD.md`
 
+## 실행
+
+```bash
+uv sync
+cp .env.example .env      # DATABASE_URL 채우기
+uv run --env-file .env python -m collector index_spx
+uv run --env-file .env python -m collector index_kospi
+uv run --env-file .env python -m collector fx_daily      # EXIM_API_KEY 필요
+```
+
+## 초기 백필 (최초 1회만)
+
+인자 없이 돌리면 최근 5일치만 받는다. 차트용 과거 구간은 한 번만 따로 받는다.
+
+```bash
+uv run --env-file .env python -m collector index_spx   1095   # 3년
+uv run --env-file .env python -m collector index_kospi 1095
+```
+
+환율은 백필하지 않는다 — 원화 환산에 항상 최신 환율 1건만 쓰기 때문(스펙 §3-1 R-4).
+
+## cron (KST)
+
+| 배치 | cron |
+|---|---|
+| `index_spx` | `30 6 * * 2-6` |
+| `index_kospi` | `40 15 * * 1-5` |
+| `fx_daily` | `10 11 * * 1-5` |
+| `fx_daily` (재확인) | `10 16 * * 1-5` |
+
+서버 타임존이 UTC면 KST 기준으로 환산할 것.
+
 ## 상태
 
-착수 전. 스펙 §5의 D-1(코스피 종가 D-1 지연 대응) 결정 대기 중.
+지수 2종 수집 동작. 환율은 `EXIM_API_KEY` 발급 후 검증 예정.
+스키마는 `schema.sql`, 설계는 `docs/design/`, DB 현황은 `docs/db.md`.
