@@ -5,13 +5,13 @@ yfinance 는 Yahoo Finance 의 비공식 엔드포인트를 쓰는 라이브러�
 교체할 때 fetch_index 의 본문만 바뀌고 호출하는 쪽은 그대로다. (설계 §8)
 """
 import math
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 import requests
 import yfinance as yf
 
-from .config import EXIM_API_KEY, TICKERS
+from .config import EXIM_API_KEY, KST, TICKERS
 
 IndexRow = tuple[str, date, Decimal, str]
 
@@ -28,7 +28,7 @@ def fetch_index(index_code: str, lookback_days: int = 5) -> list[IndexRow]:
     평소 수집(5일)과 초기 백필(3년)이 같은 코드로 처리된다.
     """
     ticker = TICKERS[index_code]
-    start = date.today() - timedelta(days=lookback_days)
+    start = datetime.now(KST).date() - timedelta(days=lookback_days)
     df = yf.download(ticker, start=start, interval="1d",
                      auto_adjust=False, progress=False)
     if df is None or df.empty:

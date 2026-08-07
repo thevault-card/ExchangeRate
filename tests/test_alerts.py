@@ -44,15 +44,15 @@ def test_staleness_ok_when_never_loaded():
 
 
 def test_outlier_warns_beyond_threshold():
-    msg = alerts.check_outlier(Decimal("1000"), Decimal("1200"), threshold=Decimal("0.10"))
+    msg = alerts.check_outlier(Decimal(1000), Decimal(1200), threshold=Decimal("0.10"))
     assert msg is not None
     assert "20" in msg
 
 
 def test_outlier_silent_within_threshold():
-    assert alerts.check_outlier(Decimal("1000"), Decimal("1050"),
+    assert alerts.check_outlier(Decimal(1000), Decimal(1050),
                                 threshold=Decimal("0.10")) is None
 
 
 def test_outlier_silent_without_previous():
-    assert alerts.check_outlier(None, Decimal("1050"), threshold=Decimal("0.10")) is None
+    assert alerts.check_outlier(None, Decimal(1050), threshold=Decimal("0.10")) is None

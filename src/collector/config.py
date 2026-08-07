@@ -1,6 +1,10 @@
 # src/collector/config.py
 """환경변수와 상수. 값이 바뀌는 것은 환경변수로, 안 바뀌는 것은 여기 상수로."""
 import os
+from datetime import timedelta, timezone
+
+# 배치 시각·조회 기준일은 전부 KST 다. 서버 타임존이 UTC 여도 날짜가 어긋나면 안 된다.
+KST = timezone(timedelta(hours=9))
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 EXIM_API_KEY = os.environ.get("EXIM_API_KEY", "")
