@@ -12,7 +12,7 @@ from functools import cache
 
 import exchange_calendars as xcals
 
-from .config import AVAILABILITY_GRACE, CALENDARS
+from .config import AVAILABILITY_GRACE, CALENDARS, EXTRA_CLOSURES
 
 
 class BatchFailure(RuntimeError):
@@ -26,7 +26,14 @@ def _calendar(market: str):
 
 
 def is_session(market: str, day: date) -> bool:
-    """그 거래소가 그 날 열었는가."""
+    """그 거래소가 그 날 열었는가.
+
+    캘린더가 모르는 휴장일은 EXTRA_CLOSURES 로 덮는다. 3년치 실측에서 XKRX 가
+    2일(제헌절·지방선거) 틀렸다. 그 날을 세션으로 보면 데이터가 없다고 거짓
+    실패한다.
+    """
+    if day in EXTRA_CLOSURES.get(CALENDARS[market], frozenset()):
+        return False
     return bool(_calendar(market).is_session(day))
 
 
@@ -41,6 +48,8 @@ def last_due_session(market: str, now: datetime) -> date | None:
     sessions = cal.sessions_in_range(now.date() - timedelta(days=30), now.date())
     due = None
     for session in sessions:
+        if not is_session(market, session.date()):
+            continue  # 캘린더가 모르는 휴장일 (EXTRA_CLOSURES)
         if cal.session_close(session) + grace <= now:
             due = session.date()
     return due

@@ -88,3 +88,21 @@ def test_outlier_silent_within_threshold():
 
 def test_outlier_silent_without_previous():
     assert alerts.check_outlier(None, Decimal(1050), threshold=Decimal("0.10")) is None
+
+
+def test_extra_closures_override_calendar():
+    """exchange_calendars 가 모르는 한국 휴장일. 3년치 실측에서 XKRX 가 틀린 2일이다.
+
+    캘린더는 개장이라고 하지만 코스피 종가도 환율 고시도 실제로 없었다. 세션으로
+    보면 그 날 배치가 데이터 없다고 거짓 실패한다.
+    """
+    assert alerts.is_session("KOSPI", date(2026, 7, 17)) is False   # 제헌절
+    assert alerts.is_session("KOSPI", date(2026, 6, 3)) is False    # 지방선거
+    assert alerts.is_session("FX", date(2026, 7, 17)) is False      # FX 도 XKRX 를 쓴다
+    # 같은 날 미국은 정상 개장이므로 덮이면 안 된다
+    assert alerts.is_session("SPX", date(2026, 7, 17)) is True
+
+
+def test_extra_closures_do_not_touch_normal_sessions():
+    assert alerts.is_session("KOSPI", date(2026, 7, 16)) is True
+    assert alerts.is_session("KOSPI", date(2026, 7, 20)) is True

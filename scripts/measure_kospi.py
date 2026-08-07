@@ -19,10 +19,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-import exchange_calendars as xcals  # noqa: E402
-import yfinance as yf  # noqa: E402
+import exchange_calendars as xcals
+import yfinance as yf
 
-from collector.config import KST  # noqa: E402
+from collector.config import KST
 
 OUT = Path(__file__).resolve().parent.parent / "measurements" / "kospi_close_samples.csv"
 FIELDS = ["sampled_at", "trade_date", "close", "open", "high", "low", "volume"]
