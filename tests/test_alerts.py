@@ -75,23 +75,6 @@ def test_check_freshness_fails_on_none_when_due_session_exists():
         alerts.check_freshness("KOSPI", None, datetime(2026, 8, 18, 16, 10, tzinfo=KST))
 
 
-def test_check_staleness_counts_sessions_not_calendar_days():
-    # 08-14 이후 08-15/16/17 은 세션이 아니다(주말+대체휴일). 08-19 16:10 시점엔
-    # 08-18·08-19 두 세션만 마감했으므로 3개 미만 -> 통과.
-    now = datetime(2026, 8, 19, 16, 10, tzinfo=KST)
-    alerts.check_staleness("KOSPI", date(2026, 8, 14), now=now)  # raise 안 하면 통과
-
-
-def test_check_staleness_fails_after_three_sessions():
-    now = datetime(2026, 8, 20, 16, 10, tzinfo=KST)  # 08-18·19·20 세 세션 마감
-    with pytest.raises(alerts.BatchFailure):
-        alerts.check_staleness("KOSPI", date(2026, 8, 14), now=now)
-
-
-def test_check_staleness_ok_when_never_loaded():
-    alerts.check_staleness("KOSPI", None, now=datetime(2026, 8, 20, 16, 10, tzinfo=KST))
-
-
 def test_outlier_warns_beyond_threshold():
     msg = alerts.check_outlier(Decimal(1000), Decimal(1200), threshold=Decimal("0.10"))
     assert msg is not None

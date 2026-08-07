@@ -57,24 +57,6 @@ def check_freshness(market: str, latest_stored: date | None, now: datetime) -> N
         )
 
 
-def check_staleness(
-    market: str, last_loaded: date | None, *, now: datetime, max_sessions: int = 3
-) -> None:
-    """마지막 적재일이 너무 오래됐으면 실패. 한 번도 안 쌓였으면 판정하지 않는다.
-
-    요일이 아니라 거래소 세션 수로 센다. 연휴가 길어도 실제 마감된 세션이
-    max_sessions 개 미만이면 통과한다.
-    """
-    if last_loaded is None:
-        return
-    cal = _calendar(market)
-    grace = AVAILABILITY_GRACE[market]
-    sessions = cal.sessions_in_range(last_loaded + timedelta(days=1), now.date())
-    elapsed = sum(1 for session in sessions if cal.session_close(session) + grace <= now)
-    if elapsed >= max_sessions:
-        raise BatchFailure(f"마지막 적재일 {last_loaded} 이후 세션 {elapsed}개 경과")
-
-
 def check_outlier(previous: Decimal | None, current: Decimal, *, threshold: Decimal) -> str | None:
     """전일 대비 변동이 임계값을 넘으면 경고 문구를 돌려준다. 파싱 버그 탐지용."""
     if previous is None or previous == 0:
