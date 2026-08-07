@@ -4,10 +4,10 @@ yfinance 는 Yahoo Finance 의 비공식 엔드포인트를 쓰는 라이브러�
 전환 시 유료 API(S&P500)와 공공데이터포털(코스피)로 교체하는 것을 전제로 한다.
 교체할 때 fetch_index 의 본문만 바뀌고 호출하는 쪽은 그대로다. (설계 §8)
 """
-import math
 from datetime import date, datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
+import pandas as pd
 import requests
 import yfinance as yf
 
@@ -40,13 +40,14 @@ def fetch_index(index_code: str, lookback_days: int = 5) -> list[IndexRow]:
 
     points: list[IndexRow] = []
     for stamp, value in closes.items():
-        if value is None:
+        if pd.isna(value):
+            # None(값 없음)과 NaN(휴장일·장중 미확정 구간)을 한 번에 거른다.
+            # 적재하면 확정 종가를 덮어쓴다.
             continue
-        number = float(value)
-        if math.isnan(number):
-            # 휴장일이나 장중 미확정 구간. 적재하면 확정 종가를 덮어쓴다.
-            continue
-        points.append((index_code, stamp.date(), Decimal(f"{number:.2f}"), "yfinance"))
+        # float() 은 금액 정밀도가 깨진다. str() 로 거쳐 Decimal 로 만들고, PostgreSQL
+        # numeric 과 같은 반올림 방식(half-up)으로 소수점 2자리에 맞춘다.
+        close_value = Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        points.append((index_code, stamp.date(), close_value, "yfinance"))
     return points
 
 
@@ -65,17 +66,26 @@ _RESULT_MEANING = {
 
 def fetch_fx(rate_date: date) -> FxRow | None:
     """USD 매매기준율 1건. 고시가 없는 날(주말·공휴일)이면 None."""
-    resp = requests.get(
-        _EXIM_URL,
-        params={
-            "authkey": EXIM_API_KEY,
-            "searchdate": rate_date.strftime("%Y%m%d"),
-            "data": "AP01",
-        },
-        timeout=(5, 10),
-    )
-    resp.raise_for_status()
-    rows = resp.json()
+    error_type: str | None = None
+    try:
+        resp = requests.get(
+            _EXIM_URL,
+            params={
+                "authkey": EXIM_API_KEY,
+                "searchdate": rate_date.strftime("%Y%m%d"),
+                "data": "AP01",
+            },
+            timeout=(5, 10),
+        )
+        resp.raise_for_status()
+        rows = resp.json()
+    except requests.RequestException as exc:
+        # 메시지에 URL(=authkey 쿼리스트링)이 담기지 않게 한다. except 블록 밖에서
+        # raise 해야 __context__ 에도 원본 예외(=키 포함 URL)가 안 남는다. `from None`
+        # 은 __cause__ 만 끊고 __context__ 는 여전히 채우므로 이것만으론 부족하다.
+        error_type = type(exc).__name__
+    if error_type is not None:
+        raise SourceError(f"수출입은행 호출 실패: {error_type}")
 
     if not rows:
         # 빈 배열은 '고시 없음'일 수도, 인증 오류일 수도 있다. 둘을 여기서 구분할 수

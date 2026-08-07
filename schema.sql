@@ -22,7 +22,10 @@ CREATE TABLE IF NOT EXISTS silver.fx_exchange_rates_test (
     created_batch_id text,
     updated_batch_id text,
     CONSTRAINT pk_fx_exchange_rates_test PRIMARY KEY (currency_code, rate_date),
-    CONSTRAINT ck_fx_base_rate_positive CHECK (base_rate > 0)
+    -- PostgreSQL 은 numeric NaN 을 자기 자신과 '같다'고 보고 0보다 '크다'고도 보므로
+    -- (IEEE 부동소수와 다름) `> 0` 만으로는 NaN 을 못 거른다. `< 'Infinity'` 를 더해야
+    -- NaN 이 확실히 막힌다 (실측: PostgreSQL 15).
+    CONSTRAINT ck_fx_base_rate_positive CHECK (base_rate > 0 AND base_rate < 'Infinity'::numeric)
 );
 
 -- 2. 시장지수 ---------------------------------------------------------
@@ -39,7 +42,8 @@ CREATE TABLE IF NOT EXISTS silver.market_indices_test (
     created_batch_id text,
     updated_batch_id text,
     CONSTRAINT pk_market_indices_test PRIMARY KEY (index_code, trade_date),
-    CONSTRAINT ck_market_close_positive CHECK (close_value > 0)
+    -- NaN 배제 이유는 위 ck_fx_base_rate_positive 주석과 같다.
+    CONSTRAINT ck_market_close_positive CHECK (close_value > 0 AND close_value < 'Infinity'::numeric)
 );
 
 -- 3. gold 뷰 — carry-forward (설계 §7) --------------------------------

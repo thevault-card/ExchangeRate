@@ -6,7 +6,9 @@
 |---|---|---|
 | 환율 | USD → KRW 매매기준율 | 한국수출입은행 Open API |
 | 시장지수 | S&P500 종가 | yfinance |
-| 시장지수 | 코스피 종가 | 공공데이터포털 (금융위원회) |
+| 시장지수 | 코스피 종가 | yfinance (`^KS11`, 잠정값) |
+
+코스피는 현재 yfinance 값을 `is_provisional=true` 로 적재한다. 공공데이터포털(금융위원회) 확정값은 나중에 붙일 예정이다.
 
 지금은 독립 운용하되, 나중에 TheVault와 합류합니다. 그래서 스키마는 처음부터 TheVault 정의서 기준(`silver.fx_exchange_rates` 등)에 맞춥니다.
 

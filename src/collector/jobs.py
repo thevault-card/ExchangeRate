@@ -1,12 +1,10 @@
 """소스 -> 판정 -> 적재 배선. 로그는 stdout JSON 한 줄. (설계 §9-2)"""
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from decimal import Decimal
 
 from . import alerts, db, sources
-from .config import FX_TABLE, INDEX_TABLE, PROVISIONAL
-
-KST = timezone(timedelta(hours=9))
+from .config import FX_TABLE, INDEX_TABLE, KST, PROVISIONAL
 
 INDEX_OUTLIER_THRESHOLD = Decimal("0.10")  # 지수는 환율보다 변동성이 크다 (설계 §9-1)
 FX_OUTLIER_THRESHOLD = Decimal("0.05")
@@ -105,7 +103,6 @@ JOBS = {
 }
 
 DEFAULT_LOOKBACK_DAYS = 5   # 평소 수집. 배치가 하루 실패해도 다음 날 메워진다
-BACKFILL_DAYS = 1095        # 초기 1회 백필 = 3년 (설계 결정 2026-08-06)
 
 
 def run(job_name: str, lookback_days: int = DEFAULT_LOOKBACK_DAYS) -> int:

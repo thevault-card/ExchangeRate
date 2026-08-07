@@ -128,6 +128,24 @@ def test_fx_missing_usd_raises(monkeypatch):
         sources.fetch_fx(date(2026, 8, 3))
 
 
+def test_fx_request_error_does_not_leak_authkey(monkeypatch):
+    """HTTPError 메시지에 담긴 authkey 쿼리스트링이 SourceError 로 새어나가면 안 된다."""
+    secret_url = "https://oapi.koreaexim.go.kr/site/program/financial/exchangeJSON?authkey=SECRET123&searchdate=20260803"
+
+    def fake_get(*a, **k):
+        raise sources.requests.HTTPError(f"500 Server Error: Internal Server Error for url: {secret_url}")
+
+    monkeypatch.setattr(sources.requests, "get", fake_get)
+
+    with pytest.raises(sources.SourceError) as exc_info:
+        sources.fetch_fx(date(2026, 8, 3))
+
+    exc = exc_info.value
+    assert "SECRET123" not in str(exc)
+    assert exc.__cause__ is None
+    assert "SECRET123" not in str(exc.__context__ or "")
+
+
 def test_fx_calls_current_domain(monkeypatch):
     """구 도메인 www.koreaexim.go.kr 은 2026-04-30 종료됐다. (스펙 §1-1)"""
     seen = {}

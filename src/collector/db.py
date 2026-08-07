@@ -6,14 +6,11 @@
   - 값이 그대로면 UPDATE를 건너뛴다 -> updated_at 이 무의미하게 갱신되지 않는다.
 """
 from datetime import date
-from decimal import Decimal
 
 import psycopg
 
 from .config import DATABASE_URL, FX_TABLE, INDEX_TABLE
-
-IndexRow = tuple[str, date, Decimal, str]  # index_code, trade_date, close_value, source
-FxRow = tuple[str, date, Decimal, str]     # currency_code, rate_date, base_rate, source
+from .sources import FxRow, IndexRow
 
 _INDEX_COLS = """(index_code, trade_date, close_value, source, is_provisional,
                   created_at, updated_at, created_batch_id, updated_batch_id)"""
