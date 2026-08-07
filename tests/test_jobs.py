@@ -77,7 +77,7 @@ def _raise_source_error(code, days):
 
 def test_success_writes_row_and_exits_zero(job_conn, monkeypatch, capsys):
     point = ("SPX", FUTURE, Decimal("5000.00"), "yfinance")
-    monkeypatch.setattr(sources, "fetch_index", lambda code, days: [point])
+    monkeypatch.setattr(sources, "fetch_index", lambda code, days: ([point], 0))
 
     rc = jobs.run_index("SPX", now=datetime.now(KST), lookback_days=1)
 
@@ -96,6 +96,7 @@ def test_success_writes_row_and_exits_zero(job_conn, monkeypatch, capsys):
 
 
 def test_run_fx_success_writes_row(job_conn, monkeypatch, capsys):
+    monkeypatch.setattr(jobs, "FX_ENABLED", True)
     point = ("USD", FUTURE, Decimal("1300.00"), "test")
     monkeypatch.setattr(sources, "fetch_fx", lambda rate_date: point)
 
@@ -128,7 +129,7 @@ def test_market_closed_when_zero_fetched_but_already_fresh(
     db.upsert_index(job_conn, [("JOBTEST", due, Decimal("1.00"), "seed")],
                     provisional=False, batch_id="seed")
 
-    monkeypatch.setattr(sources, "fetch_index", lambda code, days: [])
+    monkeypatch.setattr(sources, "fetch_index", lambda code, days: ([], 0))
 
     rc = jobs.run("index_jobtest", lookback_days=1)
 
@@ -139,7 +140,7 @@ def test_market_closed_when_zero_fetched_but_already_fresh(
 
 def test_failure_when_due_session_missing(job_conn, jobtest_route, monkeypatch, capsys):
     # 아무것도 시딩하지 않는다 -> latest_stored 는 항상 None (JOBTEST 는 실데이터가 없다)
-    monkeypatch.setattr(sources, "fetch_index", lambda code, days: [])
+    monkeypatch.setattr(sources, "fetch_index", lambda code, days: ([], 0))
 
     rc = jobs.run("index_jobtest", lookback_days=1)
 
@@ -173,7 +174,7 @@ def test_unknown_job_returns_2(capsys):
 
 def test_running_twice_same_day_does_not_duplicate(job_conn, monkeypatch, capsys):
     point = ("KOSPI", FUTURE, Decimal("2700.00"), "yfinance")
-    monkeypatch.setattr(sources, "fetch_index", lambda code, days: [point])
+    monkeypatch.setattr(sources, "fetch_index", lambda code, days: ([point], 0))
     now = datetime.now(KST)
 
     jobs.run_index("KOSPI", now=now, lookback_days=1)
@@ -190,7 +191,7 @@ def test_running_twice_same_day_does_not_duplicate(job_conn, monkeypatch, capsys
 def test_run_index_uses_provisional_flag_per_index_code(job_conn, monkeypatch, capsys):
     monkeypatch.setattr(
         sources, "fetch_index",
-        lambda code, days: [(code, FUTURE, Decimal("1.00"), "yfinance")],
+        lambda code, days: ([(code, FUTURE, Decimal("1.00"), "yfinance")], 0),
     )
     now = datetime.now(KST)
 
@@ -207,3 +208,42 @@ def test_run_index_uses_provisional_flag_per_index_code(job_conn, monkeypatch, c
 
     assert rows["SPX"] is False
     assert rows["KOSPI"] is True
+
+
+# --- FX_ENABLED 스위치 -------------------------------------------------------
+
+def test_run_fx_skipped_when_disabled(monkeypatch, capsys):
+    monkeypatch.setattr(jobs, "FX_ENABLED", False)
+    calls = []
+    monkeypatch.setattr(sources, "fetch_fx", lambda rate_date: calls.append(rate_date))
+
+    rc = jobs.run_fx(now=datetime.now(KST))
+
+    assert rc == 0
+    assert calls == []  # sources.fetch_fx 가 호출되지 않았다
+    log = _log_lines(capsys)[-1]
+    assert log["status"] == "skipped"
+
+
+def test_run_fx_runs_normally_when_enabled(job_conn, monkeypatch, capsys):
+    monkeypatch.setattr(jobs, "FX_ENABLED", True)
+    point = ("USD", FUTURE, Decimal("1300.00"), "test")
+    monkeypatch.setattr(sources, "fetch_fx", lambda rate_date: point)
+
+    rc = jobs.run_fx(now=datetime.now(KST))
+
+    assert rc == 0
+    log = _log_lines(capsys)[-1]
+    assert log["status"] == "success"
+
+
+# --- NaN 스킵 요약 로그 -------------------------------------------------------
+
+def test_run_index_summary_log_includes_skipped_count(job_conn, monkeypatch, capsys):
+    point = ("SPX", FUTURE, Decimal("5000.00"), "yfinance")
+    monkeypatch.setattr(sources, "fetch_index", lambda code, days: ([point], 3))
+
+    jobs.run_index("SPX", now=datetime.now(KST), lookback_days=1)
+
+    log = _log_lines(capsys)[-1]
+    assert log["skipped"] == 3

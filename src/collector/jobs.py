@@ -1,11 +1,11 @@
 """소스 -> 판정 -> 적재 배선. 로그는 stdout JSON 한 줄. (설계 §9-2)"""
-import json
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 
 from . import alerts, db, sources
-from .config import FX_TABLE, INDEX_TABLE, KST, PROVISIONAL
+from .config import FX_ENABLED, FX_TABLE, INDEX_TABLE, KST, PROVISIONAL
+from .logs import log as _log
 
 INDEX_OUTLIER_THRESHOLD = Decimal("0.10")  # 지수는 환율보다 변동성이 크다 (설계 §9-1)
 FX_OUTLIER_THRESHOLD = Decimal("0.05")
@@ -14,11 +14,8 @@ FX_OUTLIER_THRESHOLD = Decimal("0.05")
 class JobStatus(str, Enum):
     SUCCESS = "success"
     MARKET_CLOSED = "market_closed"  # 알림 대상 아님. 종료코드 0
+    SKIPPED = "skipped"  # FX_ENABLED=false. 알림 대상 아님. 종료코드 0
     FAILURE = "failure"  # 종료코드 1
-
-
-def _log(**fields) -> None:
-    print(json.dumps(fields, ensure_ascii=False, default=str), flush=True)
 
 
 def _batch_id(job: str, now: datetime) -> str:
@@ -29,7 +26,7 @@ def run_index(index_code: str, *, now: datetime, lookback_days: int = 5) -> int:
     job = f"index_{index_code.lower()}"
     batch_id = _batch_id(job, now)
 
-    points = sources.fetch_index(index_code, lookback_days)
+    points, skipped = sources.fetch_index(index_code, lookback_days)
 
     with db.connect() as conn:
         # 비어 있어도 접속한다 — 그래야 이번 실행이 0건이어도 staleness/freshness
@@ -48,7 +45,7 @@ def run_index(index_code: str, *, now: datetime, lookback_days: int = 5) -> int:
     status = JobStatus.SUCCESS if points else JobStatus.MARKET_CLOSED
     log_fields = {
         "job": job, "batch_id": batch_id, "status": status.value,
-        "fetched": len(points), "written": written,
+        "fetched": len(points), "written": written, "skipped": skipped,
     }
     if points:
         newest = max(points, key=lambda p: p[1])
@@ -64,6 +61,12 @@ def run_index(index_code: str, *, now: datetime, lookback_days: int = 5) -> int:
 def run_fx(*, now: datetime) -> int:
     job = "fx_daily"
     batch_id = _batch_id(job, now)
+
+    if not FX_ENABLED:
+        _log(job=job, batch_id=batch_id, status=JobStatus.SKIPPED.value,
+             reason="FX_ENABLED=false (EXIM_API_KEY 미발급)")
+        return 0
+
     today = now.date()
 
     point = sources.fetch_fx(today)

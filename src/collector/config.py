@@ -9,6 +9,10 @@ KST = timezone(timedelta(hours=9))
 DATABASE_URL = os.environ["DATABASE_URL"]
 EXIM_API_KEY = os.environ.get("EXIM_API_KEY", "")
 
+# EXIM_API_KEY 발급 전에 스케줄러에 fx_daily 를 넣으면 매일 실패 알림이 나서 진짜
+# 장애가 소음에 묻힌다. 기본은 비활성. 키 발급 후 .env 에서 true 로 바꾼다.
+FX_ENABLED = os.environ.get("FX_ENABLED", "false").strip().lower() in ("true", "1")
+
 # 검증 단계라 _test 접미사를 유지한다. 실운영 전환 시 이 두 줄만 바꾼다.
 FX_TABLE = "silver.fx_exchange_rates_test"
 INDEX_TABLE = "silver.market_indices_test"
