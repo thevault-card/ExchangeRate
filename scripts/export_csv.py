@@ -23,7 +23,7 @@ from pathlib import Path
 import psycopg
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from collector.config import KST  # noqa: E402
+from collector.config import KST
 
 OUT = Path(__file__).resolve().parent.parent / "export"
 
