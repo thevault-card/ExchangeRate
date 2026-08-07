@@ -4,14 +4,26 @@
 
 export/ 에 4개 파일이 생긴다. 세 CSV 는 UTF-8 BOM 으로 쓴다 — BOM 이 없으면
 한글 Windows 의 Excel 이 UTF-8 을 cp949 로 읽어 글자가 깨진다.
+
+■ 규칙: 원본 테이블 추출은 스키마와 1:1 이다.
+
+  market_indices.csv 와 fx_rates.csv 는 `SELECT *` 로 뽑는다. 컬럼을 빼지 않는다.
+  받는 쪽은 이 파일을 DDL·정의서와 대조하므로, 컬럼이 하나라도 없으면 스키마가
+  틀린 것으로 보인다. "읽기 편하게" 는 이 파일의 목적이 아니다.
+
+  가독성이 필요하면 market_daily_wide.csv 처럼 **별도 파일**로 더한다.
+  원본을 대체하지 않는다.
 """
 import csv
 import os
 import sys
-from datetime import date
+from datetime import datetime
 from pathlib import Path
 
 import psycopg
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from collector.config import KST  # noqa: E402
 
 OUT = Path(__file__).resolve().parent.parent / "export"
 
@@ -113,13 +125,14 @@ def main() -> int:
         "SELECT min(trade_date), max(trade_date) FROM silver.market_indices_test"
     ).fetchone()
     (OUT / "README.txt").write_text(
-        README.format(today=date.today().isoformat(), period=f"{period[0]} ~ {period[1]}"),
+        README.format(today=datetime.now(KST).date().isoformat(),
+                      period=f"{period[0]} ~ {period[1]}"),
         encoding="utf-8-sig",
     )
 
     for name, n in counts.items():
         print(f"{name}: {n}행")
-    print(f"README.txt")
+    print("README.txt")
     print(f"\n-> {OUT}")
     return 0
 
