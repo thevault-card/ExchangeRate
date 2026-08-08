@@ -25,8 +25,7 @@ from collector.config import KST
 OUT = Path(__file__).resolve().parent.parent / "export"
 
 # batch_id 는 TheVault 파이프라인 관례를 따른다: {대상DB명}_{YYYYMMDDHHMMSS}
-# (예: vaultdb_20260808103000). 파일 하나 = 실행 하나 = batch_id 하나.
-# pid 가 아니라 실행 시각을 쓰는 이유는 pid 가 OS 에서 재사용되기 때문이다.
+# (성호님 get_batch_id() 와 같은 형식). 파일 하나 = 실행 하나 = batch_id 하나.
 TARGET_DB = "vaultdb"
 BATCH_ID = f"{TARGET_DB}_{datetime.now(KST).strftime('%Y%m%d%H%M%S')}"
 
