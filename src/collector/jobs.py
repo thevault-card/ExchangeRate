@@ -102,6 +102,9 @@ def run_fx(*, now: datetime) -> int:
     status = JobStatus.SUCCESS if rows else JobStatus.MARKET_CLOSED
     _log(
         job=job, batch_id=batch_id, status=status.value,
+        # 고시가 없는 날은 "없음" 으로 남긴다(성호님 요청). 실패가 아니라 정상이다.
+        # 주말뿐 아니라 공휴일도 고시가 없어 같은 문구로 처리한다.
+        result="없음" if not rows else None,
         fetched=len(rows), written=written_by_currency,
         rate_date=today if rows else None,
         warnings=warnings_by_currency or None,

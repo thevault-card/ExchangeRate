@@ -493,3 +493,16 @@ def test_fx_backfill_skipped_when_fx_disabled(monkeypatch, capsys):
     assert calls == []
     log = _log_lines(capsys)[-1]
     assert log["status"] == "skipped"
+
+
+def test_fx_logs_없음_when_no_quote(monkeypatch, capsys):
+    """고시가 없는 날은 실패가 아니라 "없음" 으로 남는다. (성호님 요청)"""
+    monkeypatch.setattr(jobs.sources, "fetch_fx", lambda d: [])
+    monkeypatch.setattr(jobs, "FX_ENABLED", True)
+
+    code = jobs.run("fx_daily")
+    line = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+
+    assert code == 0
+    assert line["result"] == "없음"
+    assert line["status"] == "market_closed"
