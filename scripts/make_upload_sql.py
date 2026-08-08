@@ -14,12 +14,25 @@ export/ 에 .sql 파일이 생긴다. DBeaver 에서 열어 실행하면 된다.
 """
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import psycopg
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from collector.config import KST
+
 OUT = Path(__file__).resolve().parent.parent / "export"
-BATCH_ID = "lkm"
+
+# batch_id 는 TheVault 파이프라인 관례를 따른다: {대상DB명}_{YYYYMMDDHHMMSS}
+# (예: vaultdb_20260808103000). 파일 하나 = 실행 하나 = batch_id 하나.
+# pid 가 아니라 실행 시각을 쓰는 이유는 pid 가 OS 에서 재사용되기 때문이다.
+TARGET_DB = "vaultdb"
+BATCH_ID = f"{TARGET_DB}_{datetime.now(KST).strftime('%Y%m%d%H%M%S')}"
+
+# TheVault 파이프라인이 created_at/updated_at 을 date_trunc('second', NOW()) 로
+# 넣으므로 초 단위로 맞춘다. 마이크로초를 남기면 같은 컬럼에 정밀도가 섞인다.
+SECOND = "second"
 
 JOBS = {
     "fx": {
@@ -28,9 +41,10 @@ JOBS = {
         "cols": "rate_date, currency_code, base_rate, source, "
                 "created_at, updated_at, created_batch_id, updated_batch_id",
         "row": lambda r: (f"('{r[0]}', '{r[1]}', {r[2]}, '{r[3]}', "
-                          f"'{r[4].isoformat()}', '{r[5].isoformat()}', "
+                          f"'{r[4].replace(microsecond=0).isoformat()}', "
+                          f"'{r[5].replace(microsecond=0).isoformat()}', "
                           f"'{BATCH_ID}', '{BATCH_ID}')"),
-        "note": "created_at/updated_at 은 수집 당시 원본 값을 그대로 넣는다.",
+        "note": "created_at/updated_at 은 수집 당시 원본 값을 초 단위로 잘라 넣는다.",
     },
     # 대상 silver.market_indices 는 8컬럼이라 is_provisional 이 없다. 출처(source)도
     # 넣지 않기로 했다(2026-08-07 지시) — NULL 로 둔다.
@@ -45,8 +59,9 @@ JOBS = {
         "cols": "index_code, trade_date, close_value, source, "
                 "created_at, updated_at, created_batch_id, updated_batch_id",
         "row": lambda r: (f"('{r[0]}', '{r[1]}', {r[2]}, NULL, "
-                          f"now(), now(), '{BATCH_ID}', '{BATCH_ID}')"),
-        "note": "created_at/updated_at 은 실행 시점(now()) 이다. source 는 NULL, "
+                          f"date_trunc('second', now()), date_trunc('second', now()), "
+                          f"'{BATCH_ID}', '{BATCH_ID}')"),
+        "note": "created_at/updated_at 은 실행 시점(초 단위) 이다. source 는 NULL, "
                 "is_provisional 은 대상에 없어 넣지 않는다.",
     },
 }
@@ -59,7 +74,13 @@ HEADER = """-- {job} -> {table}
 -- created_batch_id / updated_batch_id = '{batch}'
 --
 -- ON CONFLICT DO NOTHING 이므로 이미 있는 키는 건너뛴다. 여러 번 돌려도 안전하다.
--- 실행 전후로 아래를 찍어 몇 행이 들어갔는지 확인할 것:
+-- 바꿔 말하면 **이미 있는 행의 값은 갱신되지 않는다.**
+--
+-- 실행 전에 확인:
+--     SELECT currency_code, count(*), min(base_rate), max(base_rate)
+--       FROM {table} GROUP BY 1;
+--
+-- 실행 후 확인:
 --     SELECT count(*) FROM {table};
 
 BEGIN;
