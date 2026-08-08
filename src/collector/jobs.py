@@ -5,7 +5,7 @@ from decimal import Decimal
 from enum import Enum
 
 from . import alerts, db, sources
-from .config import FX_CURRENCY_CODES, FX_ENABLED, FX_TABLE, INDEX_TABLE, KST, PROVISIONAL
+from .config import FX_CURRENCY_CODES, FX_ENABLED, FX_TABLE, INDEX_TABLE, KST
 from .logs import log as _log
 
 FX_BACKFILL_SLEEP_SECONDS = 0.2  # 한도를 급하게 태우지 않기 위한 호출 간 간격
@@ -40,9 +40,7 @@ def run_index(index_code: str, *, now: datetime, lookback_days: int = 5) -> int:
         previous = _latest_close(conn, index_code) if points else None
         written = 0
         if points:
-            written = db.upsert_index(
-                conn, points, provisional=PROVISIONAL[index_code], batch_id=batch_id
-            )
+            written = db.upsert_index(conn, points, batch_id=batch_id)
             conn.commit()
         latest = db.latest_date(conn, INDEX_TABLE, "index_code", index_code, "trade_date")
         alerts.check_freshness(index_code, latest, now)
@@ -56,8 +54,7 @@ def run_index(index_code: str, *, now: datetime, lookback_days: int = 5) -> int:
         newest = max(points, key=lambda p: p[1])
         warning = alerts.check_outlier(previous, newest[2], threshold=INDEX_OUTLIER_THRESHOLD)
         log_fields.update(
-            latest_date=newest[1], latest_close=newest[2],
-            provisional=PROVISIONAL[index_code], warning=warning,
+            latest_date=newest[1], latest_close=newest[2], warning=warning,
         )
     _log(**log_fields)
     return 0

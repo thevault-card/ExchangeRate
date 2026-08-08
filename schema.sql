@@ -3,7 +3,7 @@
 -- 여러 번 돌려도 안전하다.
 --
 -- 컬럼 정의는 DBeaver 에서 만들었던 원본(docs/db.md §1)과 같고, 거기 없던
--- 제약(PK·CHECK·NOT NULL)과 is_provisional 컬럼이 더해져 있다.
+-- 제약(PK·CHECK·NOT NULL)이 더해져 있다. 컬럼 구성은 대상 DB(vaultdb silver)와 1:1 이다.
 
 CREATE SCHEMA IF NOT EXISTS silver;
 CREATE SCHEMA IF NOT EXISTS gold;
@@ -29,14 +29,13 @@ CREATE TABLE IF NOT EXISTS silver.fx_exchange_rates_test (
 );
 
 -- 2. 시장지수 ---------------------------------------------------------
--- is_provisional = "나중에 공식 확정값으로 덮일 예정인가"
---   코스피(yfinance ^KS11) = true / S&P500(^GSPC) = false   (설계 §4-2)
+-- 코스피는 yfinance 잠정치라 나중에 공공데이터포털 확정값으로 교체할 예정인데,
+-- 그 구분은 source 컬럼으로 한다(2026-08-08). 대상 DB 에 별도 표시 컬럼이 없다.
 CREATE TABLE IF NOT EXISTS silver.market_indices_test (
     index_code       varchar(10)   NOT NULL,
     trade_date       date          NOT NULL,
     close_value      numeric(14,2) NOT NULL,
     "source"         varchar(30)   NOT NULL,
-    is_provisional   boolean       NOT NULL DEFAULT false,
     created_at       timestamptz   NOT NULL DEFAULT now(),
     updated_at       timestamptz   NOT NULL DEFAULT now(),
     created_batch_id text,
@@ -65,12 +64,11 @@ SELECT c.index_code,
        cal.calendar_date,
        m.close_value,
        m.trade_date                        AS source_trade_date,
-       m.is_provisional,
        (m.trade_date <> cal.calendar_date) AS is_carried_forward
   FROM cal
  CROSS JOIN codes c
   LEFT JOIN LATERAL (
-       SELECT close_value, trade_date, is_provisional
+       SELECT close_value, trade_date
          FROM silver.market_indices_test s
         WHERE s.index_code = c.index_code
           AND s.trade_date <= cal.calendar_date

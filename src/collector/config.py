@@ -31,9 +31,6 @@ FX_CURRENCY_CODES = sorted({code for code, _ in CURRENCIES.values()})
 # 우리 코드 안의 지수 코드 -> yfinance 티커
 TICKERS = {"SPX": "^GSPC", "KOSPI": "^KS11"}
 
-# 코스피는 yfinance 값이 공식 확정값이 아니라 나중에 덮어쓸 예정이다. (설계 §4-2)
-PROVISIONAL = {"SPX": False, "KOSPI": True}
-
 # 우리 코드의 시장 코드 -> exchange_calendars 캘린더 코드
 # 환율(수출입은행)은 은행 영업일이 한국거래소 영업일과 사실상 같으므로 XKRX 로 근사한다.
 # 근사가 어긋나는 곳: KRX 는 연말 폐장일(12/29·12/31)에 닫지만 은행은 영업해 고시가

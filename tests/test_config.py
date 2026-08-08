@@ -7,13 +7,12 @@ from collector.config import (
     FX_CURRENCY_CODES,
     FX_TABLE,
     INDEX_TABLE,
-    PROVISIONAL,
     TICKERS,
 )
 
 
 def test_tickers_and_provisional_cover_same_codes():
-    assert set(TICKERS) == set(PROVISIONAL) == {"SPX", "KOSPI"}
+    assert set(TICKERS) == {"SPX", "KOSPI"}
 
 
 def test_currencies_maps_jpy_100_unit_with_divisor_100():
@@ -22,10 +21,6 @@ def test_currencies_maps_jpy_100_unit_with_divisor_100():
     assert CURRENCIES["USD"] == ("USD", 1)
     assert FX_CURRENCY_CODES == ["JPY", "USD"]
 
-
-def test_kospi_is_provisional_but_spx_is_not():
-    assert PROVISIONAL["KOSPI"] is True
-    assert PROVISIONAL["SPX"] is False
 
 
 def test_table_names_keep_test_suffix():

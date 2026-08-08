@@ -27,8 +27,7 @@ def _row(conn, index_code, calendar_date):
 
 
 def test_holiday_carries_forward_previous_value(conn):
-    db.upsert_index(conn, [("TESTA", D1, Decimal("100.00"), "test")],
-                    provisional=False, batch_id="t1")
+    db.upsert_index(conn, [("TESTA", D1, Decimal("100.00"), "test")], batch_id="t1")
 
     on_session = _row(conn, "TESTA", D1)
     assert on_session == (Decimal("100.00"), D1, False)
@@ -45,10 +44,8 @@ def test_mismatched_holidays_both_indices_still_filled(conn):
     """TESTA 는 D1 만, TESTB 는 D2 만 거래일이다(서로 다른 휴일 패턴).
     D2 시점에 조회하면 TESTB 는 그날 값, TESTA 는 D1 값을 이어받아 둘 다
     채워져야 한다 — 어느 한쪽도 NULL 이면 안 된다."""
-    db.upsert_index(conn, [("TESTA", D1, Decimal("100.00"), "test")],
-                    provisional=False, batch_id="t1")
-    db.upsert_index(conn, [("TESTB", D2, Decimal("200.00"), "test")],
-                    provisional=False, batch_id="t2")
+    db.upsert_index(conn, [("TESTA", D1, Decimal("100.00"), "test")], batch_id="t1")
+    db.upsert_index(conn, [("TESTB", D2, Decimal("200.00"), "test")], batch_id="t2")
 
     testa = _row(conn, "TESTA", D2)
     testb = _row(conn, "TESTB", D2)

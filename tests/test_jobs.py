@@ -181,8 +181,7 @@ def test_market_closed_when_zero_fetched_but_already_fresh(
     assert due is not None  # XNYS 는 이력이 충분해 늘 있어야 정상
 
     # due 세션까지 이미 적재돼 있다고 시딩 (커밋은 안 된다 — job_conn 이 막는다)
-    db.upsert_index(job_conn, [("JOBTEST", due, Decimal("1.00"), "seed")],
-                    provisional=False, batch_id="seed")
+    db.upsert_index(job_conn, [("JOBTEST", due, Decimal("1.00"), "seed")], batch_id="seed")
 
     monkeypatch.setattr(sources, "fetch_index", lambda code, days: ([], 0))
 
@@ -243,29 +242,6 @@ def test_running_twice_same_day_does_not_duplicate(job_conn, monkeypatch, capsys
         assert cur.fetchone()[0] == 1
 
 
-def test_run_index_uses_provisional_flag_per_index_code(job_conn, monkeypatch, capsys):
-    monkeypatch.setattr(
-        sources, "fetch_index",
-        lambda code, days: ([(code, FUTURE, Decimal("1.00"), "yfinance")], 0),
-    )
-    now = datetime.now(KST)
-
-    jobs.run_index("SPX", now=now, lookback_days=1)
-    jobs.run_index("KOSPI", now=now, lookback_days=1)
-
-    with job_conn.cursor() as cur:
-        cur.execute(
-            f"SELECT index_code, is_provisional FROM {INDEX_TABLE} "
-            f"WHERE trade_date=%s AND index_code IN ('SPX','KOSPI')",
-            (FUTURE,),
-        )
-        rows = dict(cur.fetchall())
-
-    assert rows["SPX"] is False
-    assert rows["KOSPI"] is True
-
-
-# --- FX_ENABLED 스위치 -------------------------------------------------------
 
 def test_run_fx_skipped_when_disabled(monkeypatch, capsys):
     monkeypatch.setattr(jobs, "FX_ENABLED", False)
