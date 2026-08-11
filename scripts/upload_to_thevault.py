@@ -14,7 +14,7 @@
 
   fx     created_at / updated_at 을 **원본 값 그대로** 넣는다.
   index  created_at / updated_at 을 **적재 시점(now())** 으로 넣는다. 원본 날짜는 버린다.
-  둘 다  created_batch_id / updated_batch_id = 'lkm'
+  둘 다  created_batch_id / updated_batch_id = 'vaultuser' (대상 DB 접속 계정)
   둘 다  이미 있는 키는 건드리지 않는다(ON CONFLICT DO NOTHING). 첫 적재라 덮어쓸
          이유가 없고, 남의 데이터를 조용히 바꾸는 게 더 위험하다.
 """
@@ -24,7 +24,9 @@ import sys
 
 import psycopg
 
-BATCH_ID = "lkm"
+# batch_id 는 "어느 실행" 이 아니라 "어느 계정" 이 쓴 행인지를 남긴다(2026-08-11 성호님
+# 정리). 대상 DB 접속 계정명 그대로다 — 실행 시각을 붙이지 않는다.
+BATCH_ID = "vaultuser"
 
 JOBS = {
     "fx": {

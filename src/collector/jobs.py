@@ -23,13 +23,13 @@ class JobStatus(str, Enum):
     RATE_LIMITED = "rate_limited"  # 일일 한도 초과로 중단. "오늘 몫은 여기까지". 종료코드 0
 
 
-def _batch_id(job: str, now: datetime) -> str:
-    return f"{job}-{now.isoformat()}"
+# batch_id 는 "어느 실행" 이 아니라 "어느 계정" 이 쓴 행인지를 남기는 컬럼이다
+# (2026-08-11 성호님 정리). 그래서 접속 계정명(conn.info.user) 을 그대로 넣는다.
+# 실행 단위 추적은 stdout 로그의 job + ts 가 한다.
 
 
 def run_index(index_code: str, *, now: datetime, lookback_days: int = 5) -> int:
     job = f"index_{index_code.lower()}"
-    batch_id = _batch_id(job, now)
 
     points, skipped = sources.fetch_index(index_code, lookback_days)
 
@@ -40,14 +40,14 @@ def run_index(index_code: str, *, now: datetime, lookback_days: int = 5) -> int:
         previous = _latest_close(conn, index_code) if points else None
         written = 0
         if points:
-            written = db.upsert_index(conn, points, batch_id=batch_id)
+            written = db.upsert_index(conn, points, batch_id=conn.info.user)
             conn.commit()
         latest = db.latest_date(conn, INDEX_TABLE, "index_code", index_code, "trade_date")
         alerts.check_freshness(index_code, latest, now)
 
     status = JobStatus.SUCCESS if points else JobStatus.MARKET_CLOSED
     log_fields = {
-        "job": job, "batch_id": batch_id, "status": status.value,
+        "job": job, "status": status.value,
         "fetched": len(points), "written": written, "skipped": skipped,
     }
     if points:
@@ -62,10 +62,9 @@ def run_index(index_code: str, *, now: datetime, lookback_days: int = 5) -> int:
 
 def run_fx(*, now: datetime) -> int:
     job = "fx_daily"
-    batch_id = _batch_id(job, now)
 
     if not FX_ENABLED:
-        _log(job=job, batch_id=batch_id, status=JobStatus.SKIPPED.value,
+        _log(job=job, status=JobStatus.SKIPPED.value,
              reason="FX_ENABLED=false (EXIM_API_KEY 미발급)")
         return 0
 
@@ -81,7 +80,7 @@ def run_fx(*, now: datetime) -> int:
         for code, rate_date, base_rate, source in rows:
             previous = _latest_rate(conn, code)
             written_by_currency[code] = db.upsert_fx(
-                conn, (code, rate_date, base_rate, source), batch_id=batch_id
+                conn, (code, rate_date, base_rate, source), batch_id=conn.info.user
             )
             warning = alerts.check_outlier(previous, base_rate, threshold=FX_OUTLIER_THRESHOLD)
             if warning:
@@ -98,7 +97,7 @@ def run_fx(*, now: datetime) -> int:
 
     status = JobStatus.SUCCESS if rows else JobStatus.MARKET_CLOSED
     _log(
-        job=job, batch_id=batch_id, status=status.value,
+        job=job, status=status.value,
         # 고시가 없는 날은 "없음" 으로 남긴다(성호님 요청). 실패가 아니라 정상이다.
         # 주말뿐 아니라 공휴일도 고시가 없어 같은 문구로 처리한다.
         result="없음" if not rows else None,
@@ -120,10 +119,9 @@ def run_fx_backfill(*, now: datetime, days: int, sleep_seconds: float = FX_BACKF
     RateLimitError 는 실패가 아니라 "오늘 몫은 여기까지"라 종료코드 0으로 끝낸다.
     """
     job = "fx_backfill"
-    batch_id = _batch_id(job, now)
 
     if not FX_ENABLED:
-        _log(job=job, batch_id=batch_id, status=JobStatus.SKIPPED.value,
+        _log(job=job, status=JobStatus.SKIPPED.value,
              reason="FX_ENABLED=false (EXIM_API_KEY 미발급)")
         return 0
 
@@ -154,7 +152,7 @@ def run_fx_backfill(*, now: datetime, days: int, sleep_seconds: float = FX_BACKF
                 break
             except sources.SourceError as exc:
                 conn.commit()
-                _log(job=job, batch_id=batch_id, status=JobStatus.FAILURE.value,
+                _log(job=job, status=JobStatus.FAILURE.value,
                      error=str(exc), target_weekdays=len(target_dates),
                      already_loaded=already_loaded, attempted=attempted,
                      loaded=loaded, no_data=no_data, last_date=last_date)
@@ -169,12 +167,12 @@ def run_fx_backfill(*, now: datetime, days: int, sleep_seconds: float = FX_BACKF
                     code = row[0]
                     if (code, d) in existing:
                         continue  # 이 통화는 이 날짜에 이미 있다 (예: USD)
-                    db.upsert_fx(conn, row, batch_id=batch_id)
+                    db.upsert_fx(conn, row, batch_id=conn.info.user)
                     loaded += 1
 
             if attempted % FX_BACKFILL_PROGRESS_EVERY == 0:
                 conn.commit()
-                _log(job=job, batch_id=batch_id, status="progress",
+                _log(job=job, status="progress",
                      attempted=attempted, loaded=loaded, no_data=no_data,
                      remaining=len(pending) - attempted, last_date=d)
 
@@ -183,7 +181,7 @@ def run_fx_backfill(*, now: datetime, days: int, sleep_seconds: float = FX_BACKF
         conn.commit()
 
     status = JobStatus.RATE_LIMITED if stopped_reason else JobStatus.SUCCESS
-    _log(job=job, batch_id=batch_id, status=status.value,
+    _log(job=job, status=status.value,
          target_weekdays=len(target_dates), already_loaded=already_loaded,
          attempted=attempted, loaded=loaded, no_data=no_data,
          stopped_reason=stopped_reason, last_date=last_date)

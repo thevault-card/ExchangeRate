@@ -42,6 +42,10 @@ class _UncommittedConn:
     def cursor(self, *a, **kw):
         return self._real.cursor(*a, **kw)
 
+    @property
+    def info(self):
+        return self._real.info  # jobs.py 가 batch_id 로 쓰는 접속 계정명(info.user)
+
 
 @pytest.fixture
 def job_conn(conn, monkeypatch):

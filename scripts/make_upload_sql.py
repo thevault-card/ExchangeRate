@@ -9,25 +9,22 @@ export/ 에 .sql 파일이 생긴다. DBeaver 에서 열어 실행하면 된다.
 적재 규칙 (2026-08-07 지시):
   fx     created_at / updated_at 을 원본 값 그대로
   index  created_at / updated_at 을 적재 시점(now())
-  둘 다  created_batch_id / updated_batch_id = 'lkm'
+  둘 다  created_batch_id / updated_batch_id = 'vaultuser' (대상 DB 접속 계정)
   둘 다  ON CONFLICT DO NOTHING — 이미 있는 행은 건드리지 않는다
 """
 import os
 import sys
-from datetime import datetime
 from pathlib import Path
 
 import psycopg
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from collector.config import KST
-
 OUT = Path(__file__).resolve().parent.parent / "export"
 
-# batch_id 는 TheVault 파이프라인 관례를 따른다: {대상DB명}_{YYYYMMDDHHMMSS}
-# (성호님 get_batch_id() 와 같은 형식). 파일 하나 = 실행 하나 = batch_id 하나.
-TARGET_DB = "vaultdb"
-BATCH_ID = f"{TARGET_DB}_{datetime.now(KST).strftime('%Y%m%d%H%M%S')}"
+# batch_id 는 TheVault 파이프라인 관례를 따른다: **대상 DB 접속 계정명**
+# (성호님 get_batch_id() 와 같은 값). "어느 실행" 이 아니라 "어느 계정" 이 쓴 행인지를
+# 남기는 컬럼이라 실행 시각을 붙이지 않는다. 이 스크립트는 대상 DB 에 접속하지 않아
+# 계정을 물어볼 곳이 없으므로 하드코딩한다 — 계정이 바뀌면 이 줄을 고친다.
+BATCH_ID = "vaultuser"
 
 # TheVault 파이프라인이 created_at/updated_at 을 date_trunc('second', NOW()) 로
 # 넣으므로 초 단위로 맞춘다. 마이크로초를 남기면 같은 컬럼에 정밀도가 섞인다.
