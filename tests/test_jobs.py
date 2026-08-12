@@ -54,6 +54,24 @@ def job_conn(conn, monkeypatch):
     return conn
 
 
+# 아래 autouse 픽스처가 이 둘을 가짜로 덮으므로, 진짜 구현을 검증하는 테스트는
+# import 시점에 잡아둔 이 참조를 쓴다.
+_REAL_UP_TO_DATE = jobs._up_to_date
+_REAL_PENDING_FX_DATES = jobs._pending_fx_dates
+
+
+@pytest.fixture(autouse=True)
+def assume_work_pending(monkeypatch):
+    """기본 전제: "이번 실행은 받을 게 있다".
+
+    실DB 는 대개 최신까지 차 있어서, 스킵 판정을 그대로 두면 아래 테스트 대부분이
+    수집 경로에 들어가 보지도 못하고 up_to_date 로 끝난다. 스킵 판정 자체를 검증하는
+    테스트는 이 패치를 자기 monkeypatch 로 되돌린다(나중에 건 것이 이긴다).
+    """
+    monkeypatch.setattr(jobs, "_up_to_date", lambda market, latest, now: False)
+    monkeypatch.setattr(jobs, "_pending_fx_dates", lambda conn, now, days: [FUTURE])
+
+
 @pytest.fixture
 def jobtest_route(monkeypatch):
     """실데이터가 없는 index_code 'JOBTEST' 를 임시로 끼워 넣는다. XNYS 캘린더를
@@ -173,6 +191,84 @@ def test_run_fx_outlier_checked_per_currency(job_conn, monkeypatch, capsys):
     warnings = log.get("warnings") or {}
     assert "USD" not in warnings
     assert "JPY" in warnings
+
+
+# --- 스킵 판정 (이미 적재됨 / 주말·휴장) ------------------------------------
+
+def _boom(*args, **kwargs):
+    raise AssertionError("받을 게 없는데 외부 소스를 호출했다")
+
+
+def test_up_to_date_true_when_latest_reaches_due_session():
+    now = datetime.now(KST)
+    due = alerts.last_due_session("SPX", now)
+    assert due is not None  # XNYS 는 이력이 충분해 늘 있어야 정상
+
+    assert _REAL_UP_TO_DATE("SPX", due, now) is True
+    assert _REAL_UP_TO_DATE("SPX", due + timedelta(days=1), now) is True  # 앞서 있어도 할 일 없음
+    assert _REAL_UP_TO_DATE("SPX", due - timedelta(days=1), now) is False
+    assert _REAL_UP_TO_DATE("SPX", None, now) is False  # 한 건도 없으면 받아야 한다
+
+
+def test_run_index_skips_fetch_when_up_to_date(job_conn, monkeypatch, capsys):
+    """주말·휴장도 여기로 온다 — due 가 직전 영업일을 가리키고 그건 이미 갖고 있다."""
+    monkeypatch.setattr(jobs, "_up_to_date", lambda market, latest, now: True)
+    monkeypatch.setattr(sources, "fetch_index", _boom)
+
+    rc = jobs.run_index("SPX", now=datetime.now(KST))
+
+    assert rc == 0
+    assert _log_lines(capsys)[-1]["status"] == "up_to_date"
+
+
+def test_run_fx_skips_fetch_when_nothing_pending(job_conn, monkeypatch, capsys):
+    monkeypatch.setattr(jobs, "FX_ENABLED", True)
+    monkeypatch.setattr(jobs, "_pending_fx_dates", lambda conn, now, days: [])
+    monkeypatch.setattr(sources, "fetch_fx", _boom)
+
+    rc = jobs.run_fx(now=datetime.now(KST))
+
+    assert rc == 0
+    assert _log_lines(capsys)[-1]["status"] == "up_to_date"
+
+
+def test_pending_fx_dates_lists_only_missing_sessions(job_conn, monkeypatch):
+    """(통화, 날짜) 단위로 빠진 것만, 거래소 캘린더가 여는 날만."""
+    monkeypatch.setattr(jobs, "FX_CURRENCY_CODES", ["ZZZ"])  # 실DB 에 절대 없는 통화
+    now = datetime.now(KST)
+
+    pending = _REAL_PENDING_FX_DATES(job_conn, now, 5)
+
+    assert pending, "한 건도 없는 통화라면 최근 세션이 전부 대상이어야 한다"
+    assert pending == sorted(pending), "오래된 날짜부터여야 이상치 비교가 순서대로 된다"
+    assert all(alerts.is_session("FX", d) for d in pending), "휴장일이 섞이면 헛호출한다"
+
+    for d in pending:
+        db.upsert_fx(job_conn, ("ZZZ", d, Decimal("1.00"), "seed"), batch_id="seed")
+    assert _REAL_PENDING_FX_DATES(job_conn, now, 5) == [], "채운 뒤에는 대상이 없어야 한다"
+
+
+def test_run_fx_fills_a_missed_date(job_conn, monkeypatch, capsys):
+    """실행이 하루 빠져도 다음 실행이 스스로 메운다 — 이게 안 되던 것이 결함이었다."""
+    monkeypatch.setattr(jobs, "FX_ENABLED", True)
+    missed, today = FUTURE - timedelta(days=1), FUTURE
+    monkeypatch.setattr(jobs, "_pending_fx_dates", lambda conn, now, days: [missed, today])
+    monkeypatch.setattr(sources, "fetch_fx", lambda d: _fx_rows(d))
+
+    rc = jobs.run_fx(now=datetime.now(KST))
+
+    assert rc == 0
+    log = _log_lines(capsys)[-1]
+    assert log["status"] == "success"
+    assert log["written"] == {"USD": 2, "JPY": 2}  # 두 날짜 × 두 통화
+
+    with job_conn.cursor() as cur:
+        cur.execute(
+            f"SELECT count(*) FROM {FX_TABLE} WHERE rate_date IN (%s, %s) "
+            f"AND currency_code IN ('USD','JPY')",
+            (missed, today),
+        )
+        assert cur.fetchone()[0] == 4
 
 
 # --- MARKET_CLOSED / FAILURE ------------------------------------------------

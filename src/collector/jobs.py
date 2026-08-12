@@ -13,12 +13,18 @@ from .logs import log as _log
 FX_BACKFILL_SLEEP_SECONDS = 0.2  # 한도를 급하게 태우지 않기 위한 호출 간 간격
 FX_BACKFILL_PROGRESS_EVERY = 50  # 이 건수마다 진행 로그 + 커밋
 
+# run_fx 가 되돌아보는 범위. 지수는 매번 최근 5일을 UPSERT 해 저절로 메워지는데,
+# 환율은 당일 1건만 받아서 실행이 하루 빠지면 그 날짜가 영영 비었다. 같은 폭으로
+# 되돌아보며 없는 날만 채운다. (상시 실행 전환 설계 §4)
+FX_LOOKBACK_DAYS = 5
+
 INDEX_OUTLIER_THRESHOLD = Decimal("0.10")  # 지수는 환율보다 변동성이 크다 (설계 §9-1)
 FX_OUTLIER_THRESHOLD = Decimal("0.05")
 
 
 class JobStatus(str, Enum):
     SUCCESS = "success"
+    UP_TO_DATE = "up_to_date"  # 받을 게 없다(이미 적재됨·주말·휴장). 알림 대상 아님. 종료코드 0
     MARKET_CLOSED = "market_closed"  # 알림 대상 아님. 종료코드 0
     SKIPPED = "skipped"  # FX_ENABLED=false. 알림 대상 아님. 종료코드 0
     FAILURE = "failure"  # 종료코드 1
@@ -30,13 +36,33 @@ class JobStatus(str, Enum):
 # 실행 단위 추적은 stdout 로그의 job + ts 가 한다.
 
 
+def _up_to_date(market: str, latest_stored: date | None, now: datetime) -> bool:
+    """마감·유예가 지난 최신 세션까지 이미 갖고 있는가. 그러면 이번 실행은 할 일이 없다.
+
+    '이미 적재됨' 과 '주말·휴장' 이 한 조건으로 처리된다 — 휴장이면 due 가 직전 영업일을
+    가리키고 그 날짜는 이미 갖고 있기 때문이다. 그래서 요일 검사를 따로 두지 않는다.
+    (상시 실행 전환 설계 §4)
+    """
+    due = alerts.last_due_session(market, now)
+    if due is None:
+        return True  # 아직 아무 세션도 마감·유예를 안 지났다. 받을 게 있을 수 없다
+    return latest_stored is not None and latest_stored >= due
+
+
 def run_index(index_code: str, *, now: datetime, lookback_days: int = 5) -> int:
     job = f"index_{index_code.lower()}"
 
-    points, skipped = sources.fetch_index(index_code, lookback_days)
-
     with db.connect() as conn:
-        # 비어 있어도 접속한다 — 그래야 이번 실행이 0건이어도 staleness/freshness
+        # 먼저 DB 를 보고, 받을 게 없으면 외부 호출 없이 끝낸다. 12시간 주기에서는
+        # 실행의 절반 이상이 여기서 끝나므로, 이 판정이 fetch 앞에 있어야 의미가 있다.
+        latest = db.latest_date(conn, INDEX_TABLE, "index_code", index_code, "trade_date")
+        if _up_to_date(index_code, latest, now):
+            _log(job=job, status=JobStatus.UP_TO_DATE.value, latest_date=latest)
+            return 0
+
+        points, skipped = sources.fetch_index(index_code, lookback_days)
+
+        # 0건이어도 계속 진행한다 — 그래야 이번 실행이 0건이어도 staleness/freshness
         # 판정이 살아있다 (예: 토요일 06:30 실행이 미국 금요일분을 이미 받은 뒤
         # 그 다음 실행에서 0건이 나오는 경우도 최신 적재일 기준으로 계속 검사된다).
         previous = _latest_close(conn, index_code) if points else None
@@ -62,7 +88,28 @@ def run_index(index_code: str, *, now: datetime, lookback_days: int = 5) -> int:
     return 0
 
 
-def run_fx(*, now: datetime) -> int:
+def _pending_fx_dates(conn, now: datetime, lookback_days: int) -> list[date]:
+    """최근 lookback_days 안에서 아직 못 받은 고시일. 오래된 날짜부터.
+
+    마감·유예가 지난 날까지만 본다 — 오늘 고시 전에 돌면 오늘은 대상이 아니다.
+    요일이 아니라 거래소 캘린더로 거르므로 공휴일에 헛호출하지 않는다.
+    판정이 (통화, 날짜) 단위인 이유는 run_fx_backfill 과 같다 — USD 만 있고 JPY 가
+    없는 날짜를 날짜만 보고 거르면 JPY 가 영영 안 채워진다.
+    """
+    due = alerts.last_due_session("FX", now)
+    if due is None:
+        return []
+    start = due - timedelta(days=lookback_days)
+    existing = _existing_fx_pairs(conn, start)
+    candidates = (start + timedelta(days=i) for i in range((due - start).days + 1))
+    return [
+        d for d in candidates
+        if alerts.is_session("FX", d)
+        and any((code, d) not in existing for code in FX_CURRENCY_CODES)
+    ]
+
+
+def run_fx(*, now: datetime, lookback_days: int = FX_LOOKBACK_DAYS) -> int:
     job = "fx_daily"
 
     if not FX_ENABLED:
@@ -70,24 +117,39 @@ def run_fx(*, now: datetime) -> int:
              reason="FX_ENABLED=false (EXIM_API_KEY 미발급)")
         return 0
 
-    today = now.date()
-
-    rows = sources.fetch_fx(today)
-
     with db.connect() as conn:
+        # 받을 게 없으면 외부 호출 없이 끝낸다. 수출입은행은 일일 호출 한도가 있어
+        # 헛호출을 아끼는 것이 그대로 이득이다.
+        pending = _pending_fx_dates(conn, now, lookback_days)
+        if not pending:
+            _log(job=job, status=JobStatus.UP_TO_DATE.value,
+                 latest_date=db.latest_date(conn, FX_TABLE, "currency_code",
+                                            FX_CURRENCY_CODES[0], "rate_date"))
+            return 0
+
         # 통화별로 upsert 한다. USD 는 오는데 JPY 만 안 오는 상황을 신선도 검사가
         # 잡아야 하므로, 이번에 안 온 통화도 포함해 FX_CURRENCY_CODES 전체를 검사한다.
         written_by_currency: dict[str, int] = {}
         warnings_by_currency: dict[str, str] = {}
-        for code, rate_date, base_rate, source in rows:
-            previous = _latest_rate(conn, code)
-            written_by_currency[code] = db.upsert_fx(
-                conn, (code, rate_date, base_rate, source), batch_id=conn.info.user
-            )
-            warning = alerts.check_outlier(previous, base_rate, threshold=FX_OUTLIER_THRESHOLD)
-            if warning:
-                warnings_by_currency[code] = warning
-        if rows:
+        fetched = 0
+        stopped_reason: str | None = None
+        for rate_date in pending:
+            try:
+                rows = sources.fetch_fx(rate_date)
+            except sources.RateLimitError as exc:
+                # 실패가 아니라 "오늘 몫은 여기까지". 다음 실행이 이어받는다.
+                stopped_reason = f"일일 호출 한도 초과: {exc}"
+                break
+            fetched += len(rows)
+            for code, row_date, base_rate, source in rows:
+                previous = _latest_rate(conn, code)
+                written_by_currency[code] = written_by_currency.get(code, 0) + db.upsert_fx(
+                    conn, (code, row_date, base_rate, source), batch_id=conn.info.user
+                )
+                warning = alerts.check_outlier(previous, base_rate, threshold=FX_OUTLIER_THRESHOLD)
+                if warning:
+                    warnings_by_currency[code] = warning
+        if fetched:
             conn.commit()
 
         for code in FX_CURRENCY_CODES:
@@ -97,14 +159,19 @@ def run_fx(*, now: datetime) -> int:
             except alerts.BatchFailure as exc:
                 raise alerts.BatchFailure(f"{code}: {exc}") from exc
 
-    status = JobStatus.SUCCESS if rows else JobStatus.MARKET_CLOSED
+    if stopped_reason:
+        status = JobStatus.RATE_LIMITED
+    else:
+        status = JobStatus.SUCCESS if fetched else JobStatus.MARKET_CLOSED
     _log(
         job=job, status=status.value,
         # 고시가 없는 날은 "없음" 으로 남긴다(성호님 요청). 실패가 아니라 정상이다.
         # 주말뿐 아니라 공휴일도 고시가 없어 같은 문구로 처리한다.
-        result="없음" if not rows else None,
-        fetched=len(rows), written=written_by_currency,
-        rate_date=today if rows else None,
+        result="없음" if not fetched else None,
+        fetched=fetched, written=written_by_currency,
+        rate_date=pending[-1] if fetched else None,
+        target_dates=[str(d) for d in pending],
+        stopped_reason=stopped_reason,
         warnings=warnings_by_currency or None,
     )
     return 0
