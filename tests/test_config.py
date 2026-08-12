@@ -1,5 +1,8 @@
 # tests/test_config.py
 import importlib
+import os
+
+import pytest
 
 from collector import config as config_module
 from collector.config import (
@@ -36,12 +39,17 @@ def test_db_connection_reaches_both_tables(conn):
         cur.fetchone()
 
 
-def test_fx_enabled_defaults_to_false_and_parses_true_strings(monkeypatch):
-    """EXIM_API_KEY 발급 전 사고로 켜지지 않게, 기본값은 비활성이어야 한다."""
+def test_fx_enabled_must_be_explicit_and_parses_true_strings(monkeypatch):
+    """기본값을 두지 않는다 — 빠뜨리면 조용히 꺼진 채 도는 것보다 죽는 편이 낫다.
+
+    기본 false 를 두면 새 환경(EC2)에 변수를 빠뜨렸을 때 환율 배치가 매번
+    skipped + 종료코드 0 으로 끝나 영구히 안 도는 것을 아무도 모른다.
+    """
+    original = os.environ["FX_ENABLED"]
     try:
         monkeypatch.delenv("FX_ENABLED", raising=False)
-        importlib.reload(config_module)
-        assert config_module.FX_ENABLED is False
+        with pytest.raises(RuntimeError, match="FX_ENABLED"):
+            importlib.reload(config_module)
 
         for value in ("true", "True", "TRUE", "1"):
             monkeypatch.setenv("FX_ENABLED", value)
@@ -53,5 +61,5 @@ def test_fx_enabled_defaults_to_false_and_parses_true_strings(monkeypatch):
             importlib.reload(config_module)
             assert config_module.FX_ENABLED is False
     finally:
-        monkeypatch.delenv("FX_ENABLED", raising=False)
+        monkeypatch.setenv("FX_ENABLED", original)
         importlib.reload(config_module)

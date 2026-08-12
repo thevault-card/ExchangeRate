@@ -10,8 +10,18 @@ DATABASE_URL = os.environ["DATABASE_URL"]
 EXIM_API_KEY = os.environ.get("EXIM_API_KEY", "")
 
 # EXIM_API_KEY 발급 전에 스케줄러에 fx_daily 를 넣으면 매일 실패 알림이 나서 진짜
-# 장애가 소음에 묻힌다. 기본은 비활성. 키 발급 후 .env 에서 true 로 바꾼다.
-FX_ENABLED = os.environ.get("FX_ENABLED", "false").strip().lower() in ("true", "1")
+# 장애가 소음에 묻힌다. 그래서 끌 수 있게 두되, **기본값은 두지 않는다.**
+#
+# 기본 false 를 두면 새 환경(EC2)에 이 변수를 빠뜨렸을 때 환율 배치가 매번 skipped +
+# 종료코드 0 으로 끝나 아무도 모르게 영구히 안 돈다 — 개발 단계의 안전장치가 운영에서는
+# 실패 은폐 장치가 된다. 값을 명시하지 않으면 여기서 죽는 편이 낫다.
+try:
+    FX_ENABLED = os.environ["FX_ENABLED"].strip().lower() in ("true", "1")
+except KeyError:
+    raise RuntimeError(
+        "FX_ENABLED 를 명시하세요 (true/false). 환율 배치를 켤지 끌지는 환경마다 다르고, "
+        "빠뜨리면 조용히 꺼진 채로 돌아 아무도 눈치채지 못합니다."
+    ) from None
 
 # 검증 단계라 _test 접미사를 유지한다. 실운영 전환 시 이 두 줄만 바꾼다.
 FX_TABLE = "silver.fx_exchange_rates_test"

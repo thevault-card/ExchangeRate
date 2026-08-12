@@ -360,3 +360,85 @@ def test_fx_429_is_retryable(monkeypatch):
     assert points != []
     assert len(calls) == 2
     assert len(sleeps) == 1
+
+
+# --- 적재 불가 값 차단 (P1) --------------------------------------------------
+# 로컬 DB 는 CHECK 제약이 막아주지만 적재 대상인 vaultdb 에는 그 제약이 없다.
+# 0·음수·Infinity 가 통과하면 UPSERT 라 이미 들어가 있던 정상값을 덮어쓴다.
+
+
+@pytest.mark.parametrize("bad", [0.0, -1.5, float("inf")])
+def test_index_rejects_unloadable_close(monkeypatch, bad):
+    # inf 는 quantize 단계에서 먼저 걸린다 — 어느 쪽이든 배치가 서면 목적은 같다
+    monkeypatch.setattr(sources.yf, "download",
+                        lambda *a, **k: _frame([(date(2026, 8, 3), bad)]))
+    with pytest.raises(sources.SourceError, match="적재할 수 없는 값|숫자로 못 읽음"):
+        sources.fetch_index("SPX")
+
+
+@pytest.mark.parametrize("bad", ["0", "-1385.20"])
+def test_fx_rejects_unloadable_rate(monkeypatch, bad):
+    monkeypatch.setattr(sources.requests, "get", lambda *a, **k: _Resp([_usd(bad), _jpy()]))
+    with pytest.raises(sources.SourceError, match="적재할 수 없는 값"):
+        sources.fetch_fx(date(2026, 8, 3))
+
+
+def test_fx_malformed_rate_becomes_source_error(monkeypatch):
+    """숫자가 아닌 값이 와도 traceback 이 아니라 SourceError 여야 로그 규약이 산다."""
+    broken = {**_usd(), "deal_bas_r": None}
+    monkeypatch.setattr(sources.requests, "get", lambda *a, **k: _Resp([broken, _jpy()]))
+    with pytest.raises(sources.SourceError, match="deal_bas_r"):
+        sources.fetch_fx(date(2026, 8, 3))
+
+
+def test_fx_non_list_payload_becomes_source_error(monkeypatch):
+    """인증 실패 시 JSON 대신 다른 모양이 오는 사례가 있다."""
+    monkeypatch.setattr(sources.requests, "get", lambda *a, **k: _Resp({"error": "bad key"}))
+    with pytest.raises(sources.SourceError, match="응답 형식"):
+        sources.fetch_fx(date(2026, 8, 3))
+
+
+# --- yfinance 재시도 (설계 §9-3) ---------------------------------------------
+
+def test_index_retries_then_raises_source_error(monkeypatch):
+    """설계가 규정한 3회 재시도. 끝까지 실패하면 traceback 이 아니라 SourceError."""
+    sleeps = _no_sleep(monkeypatch)
+    calls = []
+
+    def boom(*a, **k):
+        calls.append(1)
+        raise ConnectionError("yahoo 응답 없음")
+
+    monkeypatch.setattr(sources.yf, "download", boom)
+
+    with pytest.raises(sources.SourceError, match="yfinance 호출 실패"):
+        sources.fetch_index("SPX")
+
+    assert len(calls) == 3
+    assert [round(s) for s in sleeps] == [2, 4]  # 2 -> 4 (+jitter), 3번째는 안 잠
+
+
+def test_index_succeeds_on_retry(monkeypatch):
+    _no_sleep(monkeypatch)
+    calls = []
+
+    def flaky(*a, **k):
+        calls.append(1)
+        if len(calls) == 1:
+            raise TimeoutError("느림")
+        return _frame([(date(2026, 8, 3), 5200.12)])
+
+    monkeypatch.setattr(sources.yf, "download", flaky)
+
+    points, _ = sources.fetch_index("SPX")
+    assert points[0][2] == Decimal("5200.12")
+    assert len(calls) == 2
+
+
+def test_index_malformed_frame_becomes_source_error(monkeypatch):
+    """Close 컬럼이 없는 응답. 형식이 바뀌어도 로그 규약을 깨지 않는다."""
+    monkeypatch.setattr(sources.yf, "download",
+                        lambda *a, **k: pd.DataFrame({"Open": [1.0]},
+                                                     index=pd.DatetimeIndex([date(2026, 8, 3)])))
+    with pytest.raises(sources.SourceError, match="응답 형식"):
+        sources.fetch_index("SPX")
