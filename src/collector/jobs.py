@@ -4,6 +4,8 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from enum import Enum
 
+import psycopg
+
 from . import alerts, db, sources
 from .config import FX_CURRENCY_CODES, FX_ENABLED, FX_TABLE, INDEX_TABLE, KST
 from .logs import log as _log
@@ -133,7 +135,7 @@ def run_fx_backfill(*, now: datetime, days: int, sleep_seconds: float = FX_BACKF
     ]
 
     with db.connect() as conn:
-        existing = _existing_fx_pairs(conn)
+        existing = _existing_fx_pairs(conn, start)
         pending = [
             d for d in target_dates
             if any((code, d) not in existing for code in FX_CURRENCY_CODES)
@@ -188,9 +190,13 @@ def run_fx_backfill(*, now: datetime, days: int, sleep_seconds: float = FX_BACKF
     return 0
 
 
-def _existing_fx_pairs(conn) -> set[tuple[str, date]]:
+def _existing_fx_pairs(conn, since: date) -> set[tuple[str, date]]:
+    """since 이후에 이미 적재된 (통화, 날짜) 조합. 백필 판정 범위 밖은 읽지 않는다."""
     with conn.cursor() as cur:
-        cur.execute(f"SELECT currency_code, rate_date FROM {FX_TABLE}")
+        cur.execute(
+            f"SELECT currency_code, rate_date FROM {FX_TABLE} WHERE rate_date >= %s",
+            (since,),
+        )
         return {(row[0], row[1]) for row in cur.fetchall()}
 
 
@@ -235,4 +241,10 @@ def run(job_name: str, lookback_days: int = DEFAULT_LOOKBACK_DAYS) -> int:
         return JOBS[job_name](now, lookback_days)
     except (alerts.BatchFailure, sources.SourceError) as exc:
         _log(job=job_name, status=JobStatus.FAILURE.value, error=str(exc))
+        return 1
+    except psycopg.Error as exc:
+        # 예외 타입만 남긴다. psycopg 의 접속 실패 메시지에는 호스트·계정이 들어가고,
+        # 잡지 않으면 traceback 이 그대로 stdout 에 찍혀 JSON 한 줄 규약도 깨진다.
+        # sources.py 가 authkey 를 감추는 것과 같은 이유다 — 이쪽은 실환경 접속정보다.
+        _log(job=job_name, status=JobStatus.FAILURE.value, error=f"DB 오류: {type(exc).__name__}")
         return 1

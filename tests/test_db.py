@@ -43,6 +43,18 @@ def test_changed_value_updates(conn):
     assert _rows(conn)[0] == Decimal("101.00")
 
 
+def test_same_value_but_changed_source_updates(conn):
+    """잠정치(yfinance) -> 확정치 교체. 종가가 우연히 같아도 source 는 갱신돼야 한다.
+
+    is_provisional 컬럼을 없애고 source 를 잠정/확정의 유일한 구분 근거로 삼았으므로,
+    여기서 갱신을 건너뛰면 확정값을 받고도 영영 잠정으로 남는다.
+    """
+    db.upsert_index(conn, [("TEST", D1, Decimal("100.00"), "yfinance")], batch_id="b1")
+    assert db.upsert_index(conn, [("TEST", D1, Decimal("100.00"), "data.go.kr")], batch_id="b2") == 1
+    assert _rows(conn)[1] == "data.go.kr"
+    assert _rows(conn)[4] == "b2"
+
+
 
 
 

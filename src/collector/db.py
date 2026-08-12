@@ -3,6 +3,11 @@
 적재 규칙의 핵심은 멱등성이다. 값이 그대로면 UPDATE 를 건너뛴다 -> updated_at 이
 무의미하게 갱신되지 않아 "실제로 값이 바뀐 날"을 나중에 추적할 수 있다.
 
+"값이 그대로"의 판정에는 source 도 포함한다. 코스피 잠정치(yfinance)를 나중에
+공공데이터포털 확정값으로 교체할 때 종가가 우연히 같으면, 값만 비교해서는 source 가
+'yfinance' 로 남아 잠정/확정 구분이 영영 안 된다. is_provisional 컬럼을 없애고
+source 를 유일한 구분 근거로 삼기로 했으므로(2026-08-08) 이 비교는 필수다.
+
 지수는 코스피가 yfinance 잠정치라 나중에 공공데이터포털 확정값으로 교체할 예정인데,
 그 구분은 `source` 컬럼으로 한다. 대상 테이블(vaultdb silver.market_indices)에
 is_provisional 컬럼이 없어 별도 표시를 두지 않기로 했다(2026-08-08).
@@ -25,6 +30,7 @@ ON CONFLICT (index_code, trade_date) DO UPDATE
        updated_at       = now(),
        updated_batch_id = EXCLUDED.updated_batch_id
  WHERE {INDEX_TABLE}.close_value IS DISTINCT FROM EXCLUDED.close_value
+    OR {INDEX_TABLE}.source      IS DISTINCT FROM EXCLUDED.source
 """
 
 _UPSERT_FX = f"""
@@ -38,6 +44,7 @@ ON CONFLICT (currency_code, rate_date) DO UPDATE
        updated_at       = now(),
        updated_batch_id = EXCLUDED.updated_batch_id
  WHERE {FX_TABLE}.base_rate IS DISTINCT FROM EXCLUDED.base_rate
+    OR {FX_TABLE}.source    IS DISTINCT FROM EXCLUDED.source
 """
 
 
