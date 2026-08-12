@@ -49,7 +49,10 @@ def _pending_index_dates(conn, index_code: str, now: datetime, lookback_days: in
     due = alerts.last_due_session(index_code, now)
     if due is None:
         return []  # 아직 아무 세션도 마감·유예를 안 지났다
-    start = due - timedelta(days=lookback_days)
+    start = _recovery_start(
+        due, lookback_days,
+        db.latest_date(conn, INDEX_TABLE, "index_code", index_code, "trade_date"),
+    )
     existing = _existing_index_dates(conn, index_code, start)
     return [d for d in _sessions_between(index_code, start, due) if d not in existing]
 
@@ -117,7 +120,12 @@ def _pending_fx_dates(conn, now: datetime, lookback_days: int) -> list[date]:
     due = alerts.last_due_session("FX", now)
     if due is None:
         return []
-    start = due - timedelta(days=lookback_days)
+    # 통화마다 최신일이 다를 수 있다(예: JPY 만 뒤처짐). 가장 뒤처진 통화를 기준으로
+    # 구간을 잡아야 그 통화도 같이 복구된다.
+    latests = [db.latest_date(conn, FX_TABLE, "currency_code", code, "rate_date")
+               for code in FX_CURRENCY_CODES]
+    slowest = None if any(d is None for d in latests) else min(latests)
+    start = _recovery_start(due, lookback_days, slowest)
     existing = _existing_fx_pairs(conn, start)
     candidates = (start + timedelta(days=i) for i in range((due - start).days + 1))
     return [
@@ -280,6 +288,25 @@ def run_fx_backfill(*, now: datetime, days: int, sleep_seconds: float = FX_BACKF
          attempted=attempted, loaded=loaded, no_data=no_data,
          stopped_reason=stopped_reason, last_date=last_date)
     return 0
+
+
+def _recovery_start(due: date, lookback_days: int, latest_stored: date | None) -> date:
+    """어느 날짜부터 검사할지. 밀린 만큼 구간이 저절로 넓어진다.
+
+    고정 창(due - lookback_days)만 쓰면 그보다 오래 멈췄을 때 최근 며칠만 채우고
+    최신일이 due 에 닿아 신선도 검사를 통과해버린다 — 나머지 공백은 성공으로 포장된 채
+    남는다. 그래서 적재된 최신일 다음날까지 구간을 늘린다.
+
+    반대로 창을 좁히지는 않는다(min 을 쓰는 이유). 최신일이 due 와 같아도 최근 며칠은
+    계속 훑어야 **최신일보다 앞에 숨은 구멍**을 잡는다.
+
+    상한은 두지 않는다. 지수는 yfinance 가 기간을 한 번에 주고, 환율은 일일 한도에
+    걸리면 rate_limited 로 끊고 다음 실행이 이어받는다 — 둘 다 이미 처리돼 있다.
+    """
+    window = due - timedelta(days=lookback_days)
+    if latest_stored is None:
+        return window  # 한 건도 없다. 과거 전체 적재는 lookback 을 명시해 부른다
+    return min(window, latest_stored + timedelta(days=1))
 
 
 def _sessions_between(market: str, start: date, end: date) -> list[date]:

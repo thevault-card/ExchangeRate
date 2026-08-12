@@ -612,3 +612,38 @@ def test_fx_logs_없음_when_no_quote(monkeypatch, capsys):
     assert code == 0
     assert line["result"] == "없음"
     assert line["status"] == "market_closed"
+
+
+# --- 밀린 만큼 구간이 넓어지는가 --------------------------------------------
+
+def test_recovery_start_widens_with_the_backlog():
+    due = date(2026, 8, 12)
+
+    # 정상: 최신일이 due 와 같아도 창은 안 좁아진다 (앞에 숨은 구멍을 잡아야 하므로)
+    assert jobs._recovery_start(due, 5, date(2026, 8, 12)) == date(2026, 8, 7)
+
+    # 30일 중단: 최신일 다음날까지 자동으로 넓어진다
+    assert jobs._recovery_start(due, 5, date(2026, 7, 13)) == date(2026, 7, 14)
+
+    # 한 건도 없으면 고정 창. 과거 전체 적재는 lookback 을 명시해 부른다
+    assert jobs._recovery_start(due, 5, None) == date(2026, 8, 7)
+
+
+def test_pending_index_dates_covers_a_gap_older_than_lookback(job_conn, monkeypatch):
+    """5일 창 밖의 공백도 잡아야 한다 — 이걸 놓치면 최근 며칠만 채우고 성공으로 끝난다."""
+    now = datetime.now(KST)
+    due = alerts.last_due_session("SPX", now)
+    monkeypatch.setitem(alerts.CALENDARS, "OLDGAP", "XNYS")
+    monkeypatch.setitem(alerts.AVAILABILITY_GRACE, "OLDGAP", timedelta(minutes=30))
+
+    # 30일 전에 한 건만 있고 그 뒤로 통째로 비어 있는 상태
+    stale = due - timedelta(days=30)
+    while not alerts.is_session("OLDGAP", stale):
+        stale += timedelta(days=1)
+    db.upsert_index(job_conn, [("OLDGAP", stale, Decimal("1.00"), "seed")], batch_id="seed")
+
+    pending = _REAL_PENDING_INDEX_DATES(job_conn, "OLDGAP", now, 5)
+
+    assert min(pending) < due - timedelta(days=5), "고정 5일 창을 넘어 과거까지 잡아야 한다"
+    assert stale not in pending, "이미 있는 날짜는 대상이 아니다"
+    assert due in pending

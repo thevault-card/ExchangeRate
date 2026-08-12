@@ -23,9 +23,12 @@ except KeyError:
         "빠뜨리면 조용히 꺼진 채로 돌아 아무도 눈치채지 못합니다."
     ) from None
 
-# 검증 단계라 _test 접미사를 유지한다. 실운영 전환 시 이 두 줄만 바꾼다.
-FX_TABLE = "silver.fx_exchange_rates_test"
-INDEX_TABLE = "silver.market_indices_test"
+# 로컬 개발 DB(exchangerate_dev)와 적재 대상(vaultdb)이 같은 이름을 쓴다.
+# 어느 DB 를 향하는지는 DATABASE_URL 하나로만 갈린다(설계 §10 P-3).
+# 그래서 테스트가 실환경에 붙는 사고를 이름으로는 막을 수 없다 — conftest.py 의
+# 운영 DSN 차단이 그 역할을 한다. (2026-08-12 _test 접미사 제거)
+FX_TABLE = "silver.fx_exchange_rates"
+INDEX_TABLE = "silver.market_indices"
 
 # 수출입은행 응답의 cur_unit -> (우리 통화코드, 나누는 단위)
 # JPY 는 cur_unit 이 'JPY(100)' 이고 값이 100엔당이라 100 으로 나눠 1엔당으로 만든다.

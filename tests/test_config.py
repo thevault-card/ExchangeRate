@@ -26,9 +26,10 @@ def test_currencies_maps_jpy_100_unit_with_divisor_100():
 
 
 
-def test_table_names_keep_test_suffix():
-    assert FX_TABLE.endswith("_test")
-    assert INDEX_TABLE.endswith("_test")
+def test_table_names_match_target_schema():
+    """적재 대상(vaultdb)과 이름이 같아야 한다. 로컬 DB 도 같은 이름으로 맞춰뒀다."""
+    assert FX_TABLE == "silver.fx_exchange_rates"
+    assert INDEX_TABLE == "silver.market_indices"
 
 
 def test_db_connection_reaches_both_tables(conn):
