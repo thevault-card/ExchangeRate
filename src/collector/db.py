@@ -8,9 +8,11 @@
 'yfinance' 로 남아 잠정/확정 구분이 영영 안 된다. is_provisional 컬럼을 없애고
 source 를 유일한 구분 근거로 삼기로 했으므로(2026-08-08) 이 비교는 필수다.
 
-지수는 코스피가 yfinance 잠정치라 나중에 공공데이터포털 확정값으로 교체할 예정인데,
-그 구분은 `source` 컬럼으로 한다. 대상 테이블(vaultdb silver.market_indices)에
-is_provisional 컬럼이 없어 별도 표시를 두지 않기로 했다(2026-08-08).
+다만 그 비교에는 **방향이 있어야 한다.** 코스피는 yfinance 잠정치라 나중에 공공데이터
+포털 확정값으로 교체할 예정인데, 방향이 없으면 확정값이 들어간 뒤 다음 yfinance 배치가
+같은 날짜를 다시 받아 확정값을 잠정치로 되돌린다. 설계 §6 의 "잠정은 확정을 못 건드리고,
+확정은 항상 이긴다" 가 is_provisional 컬럼 삭제와 함께 사라졌던 자리다. 잠정 소스는
+yfinance 하나뿐이므로 아래 SQL 의 CASE 한 줄이 그 규칙 전부다.
 """
 from datetime import date
 
@@ -18,6 +20,14 @@ import psycopg
 
 from .config import DATABASE_URL, FX_TABLE, INDEX_TABLE
 from .sources import FxRow, IndexRow
+
+# 잠정치를 주는 소스. 이 소스는 다른 소스가 쓴 행을 건드리지 못한다.
+PROVISIONAL_SOURCE = "yfinance"
+
+def _rank(col: str) -> str:
+    """0 = 잠정, 1 = 확정. 확정끼리는 나중 것이 이긴다(정정 고시를 반영해야 하므로)."""
+    return f"CASE WHEN {col} = '{PROVISIONAL_SOURCE}' THEN 0 ELSE 1 END"
+
 
 _UPSERT_INDEX = f"""
 INSERT INTO {INDEX_TABLE}
@@ -29,8 +39,9 @@ ON CONFLICT (index_code, trade_date) DO UPDATE
        source           = EXCLUDED.source,
        updated_at       = now(),
        updated_batch_id = EXCLUDED.updated_batch_id
- WHERE {INDEX_TABLE}.close_value IS DISTINCT FROM EXCLUDED.close_value
-    OR {INDEX_TABLE}.source      IS DISTINCT FROM EXCLUDED.source
+ WHERE ({INDEX_TABLE}.close_value IS DISTINCT FROM EXCLUDED.close_value
+        OR {INDEX_TABLE}.source   IS DISTINCT FROM EXCLUDED.source)
+   AND {_rank('EXCLUDED.source')} >= {_rank(f'{INDEX_TABLE}.source')}
 """
 
 _UPSERT_FX = f"""

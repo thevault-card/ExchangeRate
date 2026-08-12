@@ -55,6 +55,31 @@ def test_same_value_but_changed_source_updates(conn):
     assert _rows(conn)[4] == "b2"
 
 
+def test_provisional_cannot_overwrite_confirmed(conn):
+    """확정치가 들어간 뒤 yfinance 배치가 같은 날짜를 다시 받아도 되돌리지 못한다.
+
+    지수 배치는 매 실행 최근 5일을 다시 받으므로, 방향 규칙이 없으면 확정값을 넣은
+    다음 실행이 곧바로 잠정치로 덮어쓴다. (설계 §6)
+    """
+    db.upsert_index(conn, [("TEST", D1, Decimal("2700.00"), "data.go.kr")], batch_id="final")
+
+    # 값까지 다른 잠정치 — 그래도 확정 행은 못 건드린다
+    assert db.upsert_index(conn, [("TEST", D1, Decimal("2699.00"), "yfinance")],
+                           batch_id="prov") == 0
+    row = _rows(conn)
+    assert row[0] == Decimal("2700.00")
+    assert row[1] == "data.go.kr"
+    assert row[4] == "final", "updated_batch_id 도 그대로여야 한다"
+
+
+def test_confirmed_can_correct_confirmed(conn):
+    """확정끼리는 나중 것이 이긴다 — 정정 고시를 반영할 수 있어야 한다."""
+    db.upsert_index(conn, [("TEST", D1, Decimal("2700.00"), "data.go.kr")], batch_id="b1")
+    assert db.upsert_index(conn, [("TEST", D1, Decimal("2701.00"), "data.go.kr")],
+                           batch_id="b2") == 1
+    assert _rows(conn)[0] == Decimal("2701.00")
+
+
 
 
 
