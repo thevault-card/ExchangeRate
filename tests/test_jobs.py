@@ -19,7 +19,7 @@ from decimal import Decimal
 import pytest
 
 from collector import alerts, db, jobs, sources
-from collector.config import FX_TABLE, INDEX_TABLE, KST
+from collector.config import FX_CURRENCY_CODES, FX_TABLE, INDEX_TABLE, KST
 
 FUTURE = date(2099, 1, 1)  # 실DB 어디에도 없을 미래 날짜. 충돌 걱정 없이 쓴다.
 
@@ -601,10 +601,18 @@ def test_fx_backfill_skipped_when_fx_disabled(monkeypatch, capsys):
     assert log["status"] == "skipped"
 
 
-def test_fx_logs_없음_when_no_quote(monkeypatch, capsys):
-    """고시가 없는 날은 실패가 아니라 "없음" 으로 남는다. (성호님 요청)"""
+def test_fx_logs_없음_when_no_quote(job_conn, monkeypatch, capsys):
+    """고시가 없는 날은 실패가 아니라 "없음" 으로 남는다. (성호님 요청)
+
+    신선도 검사를 통과할 상태를 이 테스트가 직접 만든다. 실DB 가 최신이라고
+    가정하면 안 된다 — 로컬 개발 DB 는 수집기가 vaultdb 로 옮겨간 뒤(2026-08-12)
+    아무도 쓰지 않아 매일 낡는다. job_conn 이 끝에 롤백하므로 흔적은 안 남는다.
+    """
     monkeypatch.setattr(jobs.sources, "fetch_fx", lambda d: [])
     monkeypatch.setattr(jobs, "FX_ENABLED", True)
+    due = alerts.last_due_session("FX", datetime.now(KST))
+    for code_ in FX_CURRENCY_CODES:
+        db.upsert_fx(job_conn, (code_, due, Decimal("1000.00"), "seed"), batch_id="seed")
 
     code = jobs.run("fx_daily")
     line = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
