@@ -11,9 +11,10 @@
 ## 어떻게 도는가
 
 ```
-스케줄러(06:30 / 18:30 KST)  →  scripts/run_all.cmd  →  배치 3개를 순서대로
-                                                          │
-  ┌───────────────────────────────────────────────────────┘
+cron 06:30 KST  →  run_all.sh morning  →  index_spx
+cron 18:30 KST  →  run_all.sh evening  →  index_kospi, fx_daily
+                                             │
+  ┌──────────────────────────────────────────┘
   │
   ├─ ① DB 조회: 있어야 할 세션 중 아직 없는 날짜는?
   │      없으면 → status=up_to_date, 외부 호출 0건, 종료코드 0
@@ -49,7 +50,17 @@ uv run --env-file .env python -m collector index_spx
 uv run --env-file .env python -m collector index_kospi
 uv run --env-file .env python -m collector fx_daily
 
-scripts/run_all.cmd        # 셋 다 (스케줄러가 부르는 진입점)
+scripts/run_all.sh morning   # cron 이 부르는 진입점 (index_spx)
+scripts/run_all.sh evening   # index_kospi + fx_daily
+```
+
+`run_all.sh` 는 **실패해도 재시도하지 않습니다.** 실패한 줄을 `logs/errors.log` 와 stderr에 남기고 종료코드 1로 끝냅니다 — cron이 출력을 `MAILTO` 주소로 보내므로 그게 알림 경로입니다. 한 배치가 실패해도 나머지는 계속 시도합니다.
+
+```cron
+TZ=Asia/Seoul
+MAILTO=you@example.com
+30 6  * * * /home/ec2-user/ExchangeRate/scripts/run_all.sh morning
+30 18 * * * /home/ec2-user/ExchangeRate/scripts/run_all.sh evening
 ```
 
 **일수를 붙이면 복구 실행**입니다. 스킵 판정을 건너뛰고 그 범위를 다시 받습니다.
