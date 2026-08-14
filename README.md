@@ -81,13 +81,19 @@ uv run --env-file .env.local pytest
 ## 구조
 
 ```
+main.py             ★ 여기서 시작. 실행법 + 전체 지도가 주석에 있다
 src/collector/
-  config.py    환경변수·상수. 거래소 캘린더 매핑, 캘린더가 모르는 휴장일
-  sources.py   외부 호출. 재시도·정밀도 변환·적재 불가 값 차단
-  alerts.py    거래소 캘린더 판정 (마감된 세션, 신선도, 이상치)  ← 두뇌
-  db.py        UPSERT 2개. 멱등 규칙과 잠정/확정 방향 규칙
-  jobs.py      위를 배선. 결함이 있다면 대개 여기
+  jobs.py           배선 — 판정→수집→적재→검사. 결함이 있다면 대개 여기
+  rules.py          ① 언제 받아야 하나 (거래소 캘린더·신선도·이상치)
+  sources.py        ② 외부 호출 (yfinance·수출입은행). 재시도·정밀도·값 검증
+  db.py             ③ 적재 (UPSERT). 멱등 규칙과 잠정/확정 방향 규칙
+  config.py         설정·상수 (통화 매핑, 캘린더 매핑, 테이블명)
+  logs.py           stdout JSON 한 줄
+scripts/run_all.sh  cron 진입점
+tests/              test_<모듈명>.py 로 1:1 대응
 ```
+
+`python main.py index_spx` 로도 돌아갑니다 — cron 이 부르는 경로와 같은 함수를 탑니다.
 
 - 설계: `docs/design/` — 왜 그렇게 만들었는지가 여기 있습니다
 - 스키마: `schema.sql` · DB 현황: `docs/db.md`

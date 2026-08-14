@@ -177,7 +177,7 @@ def fetch_fx(rate_date: date) -> list[FxRow]:
 
     if not rows:
         # 빈 배열은 '고시 없음'일 수도, 인증 오류일 수도 있다. 둘을 여기서 구분할 수
-        # 없으므로 빈 리스트를 돌려주고, 영업일 여부 판정은 alerts 가 한다. (스펙 §1-2 함정②)
+        # 없으므로 빈 리스트를 돌려주고, 영업일 여부 판정은 rules 가 한다. (스펙 §1-2 함정②)
         return []
 
     if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):

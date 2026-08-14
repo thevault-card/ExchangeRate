@@ -10,7 +10,7 @@ _UncommittedConn 으로 감싸 커밋·클로즈를 무력화한 뒤 db.connect 
 
 MARKET_CLOSED/FAILURE 두 시나리오는 latest_stored 를 결정론적으로 통제해야
 해서(실SPX/KOSPI 는 이미 최신까지 쌓여 있어 FAILURE 를 재현 못 할 수 있다)
-실데이터가 전혀 없는 'JOBTEST' 코드를 alerts.CALENDARS 등에 임시로 끼워 넣는다.
+실데이터가 전혀 없는 'JOBTEST' 코드를 rules.CALENDARS 등에 임시로 끼워 넣는다.
 """
 import json
 from datetime import date, datetime, timedelta
@@ -18,7 +18,7 @@ from decimal import Decimal
 
 import pytest
 
-from collector import alerts, db, jobs, sources
+from collector import db, jobs, rules, sources
 from collector.config import FX_CURRENCY_CODES, FX_TABLE, INDEX_TABLE, KST
 
 FUTURE = date(2099, 1, 1)  # 실DB 어디에도 없을 미래 날짜. 충돌 걱정 없이 쓴다.
@@ -79,8 +79,8 @@ def jobtest_route(monkeypatch):
     재사용하므로 last_due_session 이 항상 결정 가능한 값을 돌려준다.
     PROVISIONAL 은 일부러 안 넣는다 — points 가 빈 경우에만 쓰는 이 두 시나리오
     (MARKET_CLOSED/FAILURE)에서는 run_index 가 그 값을 아예 읽지 않는다."""
-    monkeypatch.setitem(alerts.CALENDARS, "JOBTEST", "XNYS")
-    monkeypatch.setitem(alerts.AVAILABILITY_GRACE, "JOBTEST", timedelta(minutes=30))
+    monkeypatch.setitem(rules.CALENDARS, "JOBTEST", "XNYS")
+    monkeypatch.setitem(rules.AVAILABILITY_GRACE, "JOBTEST", timedelta(minutes=30))
     monkeypatch.setitem(
         jobs.JOBS, "index_jobtest",
         lambda now, days, force: jobs.run_index("JOBTEST", now=now, lookback_days=days,
@@ -162,7 +162,7 @@ def test_run_fx_freshness_checked_per_currency(job_conn, monkeypatch, capsys):
     monkeypatch.setattr(jobs, "FX_ENABLED", True)
     monkeypatch.setattr(jobs, "FX_CURRENCY_CODES", ["USD", "ZZZ"])
     now = datetime.now(KST)
-    due = alerts.last_due_session("FX", now)
+    due = rules.last_due_session("FX", now)
     db.upsert_fx(job_conn, ("USD", due, Decimal("1400.00"), "seed"), batch_id="seed")
 
     monkeypatch.setattr(sources, "fetch_fx", lambda d: [])
@@ -204,8 +204,8 @@ def _boom(*args, **kwargs):
 def test_pending_index_dates_reports_a_hole_even_when_latest_is_current(job_conn, monkeypatch):
     """중간 공백이 핵심이다. max(trade_date) 로 판정하면 이 상황이 '최신' 으로 통과한다."""
     now = datetime.now(KST)
-    sessions = jobs._sessions_between("SPX", alerts.last_due_session("SPX", now)
-                                      - timedelta(days=10), alerts.last_due_session("SPX", now))
+    sessions = jobs._sessions_between("SPX", rules.last_due_session("SPX", now)
+                                      - timedelta(days=10), rules.last_due_session("SPX", now))
     assert len(sessions) >= 3, "판정 범위에 세션이 최소 3일은 있어야 이 테스트가 성립한다"
 
     # 'HOLE' 코드로 최신일 포함 전 구간을 채우되, 중간 하루만 비워둔다
@@ -213,8 +213,8 @@ def test_pending_index_dates_reports_a_hole_even_when_latest_is_current(job_conn
     for d in sessions:
         if d != hole:
             db.upsert_index(job_conn, [("HOLE", d, Decimal("1.00"), "seed")], batch_id="seed")
-    monkeypatch.setitem(alerts.CALENDARS, "HOLE", "XNYS")
-    monkeypatch.setitem(alerts.AVAILABILITY_GRACE, "HOLE", timedelta(minutes=30))
+    monkeypatch.setitem(rules.CALENDARS, "HOLE", "XNYS")
+    monkeypatch.setitem(rules.AVAILABILITY_GRACE, "HOLE", timedelta(minutes=30))
 
     pending = _REAL_PENDING_INDEX_DATES(job_conn, "HOLE", now, 10)
 
@@ -271,7 +271,7 @@ def test_pending_fx_dates_lists_only_missing_sessions(job_conn, monkeypatch):
 
     assert pending, "한 건도 없는 통화라면 최근 세션이 전부 대상이어야 한다"
     assert pending == sorted(pending), "오래된 날짜부터여야 이상치 비교가 순서대로 된다"
-    assert all(alerts.is_session("FX", d) for d in pending), "휴장일이 섞이면 헛호출한다"
+    assert all(rules.is_session("FX", d) for d in pending), "휴장일이 섞이면 헛호출한다"
 
     for d in pending:
         db.upsert_fx(job_conn, ("ZZZ", d, Decimal("1.00"), "seed"), batch_id="seed")
@@ -307,7 +307,7 @@ def test_market_closed_when_zero_fetched_but_already_fresh(
     job_conn, jobtest_route, monkeypatch, capsys
 ):
     now = datetime.now(KST)
-    due = alerts.last_due_session("JOBTEST", now)
+    due = rules.last_due_session("JOBTEST", now)
     assert due is not None  # XNYS 는 이력이 충분해 늘 있어야 정상
 
     # due 세션까지 이미 적재돼 있다고 시딩 (커밋은 안 된다 — job_conn 이 막는다)
@@ -610,7 +610,7 @@ def test_fx_logs_없음_when_no_quote(job_conn, monkeypatch, capsys):
     """
     monkeypatch.setattr(jobs.sources, "fetch_fx", lambda d: [])
     monkeypatch.setattr(jobs, "FX_ENABLED", True)
-    due = alerts.last_due_session("FX", datetime.now(KST))
+    due = rules.last_due_session("FX", datetime.now(KST))
     for code_ in FX_CURRENCY_CODES:
         db.upsert_fx(job_conn, (code_, due, Decimal("1000.00"), "seed"), batch_id="seed")
 
@@ -640,13 +640,13 @@ def test_recovery_start_widens_with_the_backlog():
 def test_pending_index_dates_covers_a_gap_older_than_lookback(job_conn, monkeypatch):
     """5일 창 밖의 공백도 잡아야 한다 — 이걸 놓치면 최근 며칠만 채우고 성공으로 끝난다."""
     now = datetime.now(KST)
-    due = alerts.last_due_session("SPX", now)
-    monkeypatch.setitem(alerts.CALENDARS, "OLDGAP", "XNYS")
-    monkeypatch.setitem(alerts.AVAILABILITY_GRACE, "OLDGAP", timedelta(minutes=30))
+    due = rules.last_due_session("SPX", now)
+    monkeypatch.setitem(rules.CALENDARS, "OLDGAP", "XNYS")
+    monkeypatch.setitem(rules.AVAILABILITY_GRACE, "OLDGAP", timedelta(minutes=30))
 
     # 30일 전에 한 건만 있고 그 뒤로 통째로 비어 있는 상태
     stale = due - timedelta(days=30)
-    while not alerts.is_session("OLDGAP", stale):
+    while not rules.is_session("OLDGAP", stale):
         stale += timedelta(days=1)
     db.upsert_index(job_conn, [("OLDGAP", stale, Decimal("1.00"), "seed")], batch_id="seed")
 

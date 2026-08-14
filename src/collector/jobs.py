@@ -6,7 +6,7 @@ from enum import Enum
 
 import psycopg
 
-from . import alerts, db, sources
+from . import db, rules, sources
 from .config import FX_CURRENCY_CODES, FX_ENABLED, FX_TABLE, INDEX_TABLE, KST
 from .logs import log as _log
 
@@ -46,7 +46,7 @@ def _pending_index_dates(conn, index_code: str, now: datetime, lookback_days: in
 
     주말·휴장은 후보에 애초에 안 들어와 '이미 적재됨' 과 같은 경로로 스킵된다.
     """
-    due = alerts.last_due_session(index_code, now)
+    due = rules.last_due_session(index_code, now)
     if due is None:
         return []  # 아직 아무 세션도 마감·유예를 안 지났다
     start = _recovery_start(
@@ -87,7 +87,7 @@ def run_index(index_code: str, *, now: datetime, lookback_days: int = 5,
             written = db.upsert_index(conn, points, batch_id=conn.info.user)
             conn.commit()
         latest = db.latest_date(conn, INDEX_TABLE, "index_code", index_code, "trade_date")
-        alerts.check_freshness(index_code, latest, now)
+        rules.check_freshness(index_code, latest, now)
 
     status = JobStatus.SUCCESS if points else JobStatus.MARKET_CLOSED
     log_fields = {
@@ -96,7 +96,7 @@ def run_index(index_code: str, *, now: datetime, lookback_days: int = 5,
     }
     if points:
         newest = max(points, key=lambda p: p[1])
-        warning = alerts.check_outlier(previous, newest[2], threshold=INDEX_OUTLIER_THRESHOLD)
+        warning = rules.check_outlier(previous, newest[2], threshold=INDEX_OUTLIER_THRESHOLD)
         log_fields.update(
             latest_date=newest[1], latest_close=newest[2], warning=warning,
         )
@@ -117,7 +117,7 @@ def _pending_fx_dates(conn, now: datetime, lookback_days: int) -> list[date]:
     판정이 (통화, 날짜) 단위인 이유는 run_fx_backfill 과 같다 — USD 만 있고 JPY 가
     없는 날짜를 날짜만 보고 거르면 JPY 가 영영 안 채워진다.
     """
-    due = alerts.last_due_session("FX", now)
+    due = rules.last_due_session("FX", now)
     if due is None:
         return []
     # 통화마다 최신일이 다를 수 있다(예: JPY 만 뒤처짐). 가장 뒤처진 통화를 기준으로
@@ -176,7 +176,7 @@ def run_fx(*, now: datetime, lookback_days: int = FX_LOOKBACK_DAYS) -> int:
             written_by_currency[code] = written_by_currency.get(code, 0) + db.upsert_fx(
                 conn, (code, row_date, base_rate, source), batch_id=conn.info.user
             )
-            warning = alerts.check_outlier(previous, base_rate, threshold=FX_OUTLIER_THRESHOLD)
+            warning = rules.check_outlier(previous, base_rate, threshold=FX_OUTLIER_THRESHOLD)
             if warning:
                 warnings_by_currency[code] = warning
         if fetched:
@@ -185,9 +185,9 @@ def run_fx(*, now: datetime, lookback_days: int = FX_LOOKBACK_DAYS) -> int:
         for code in FX_CURRENCY_CODES:
             latest = db.latest_date(conn, FX_TABLE, "currency_code", code, "rate_date")
             try:
-                alerts.check_freshness("FX", latest, now)
-            except alerts.BatchFailure as exc:
-                raise alerts.BatchFailure(f"{code}: {exc}") from exc
+                rules.check_freshness("FX", latest, now)
+            except rules.BatchFailure as exc:
+                raise rules.BatchFailure(f"{code}: {exc}") from exc
 
     if stopped_reason:
         status = JobStatus.RATE_LIMITED
@@ -312,7 +312,7 @@ def _recovery_start(due: date, lookback_days: int, latest_stored: date | None) -
 def _sessions_between(market: str, start: date, end: date) -> list[date]:
     """start~end 사이에 그 거래소가 연 날짜. 양끝 포함, 오래된 날짜부터."""
     days = (start + timedelta(days=i) for i in range((end - start).days + 1))
-    return [d for d in days if alerts.is_session(market, d)]
+    return [d for d in days if rules.is_session(market, d)]
 
 
 def _existing_index_dates(conn, index_code: str, since: date) -> set[date]:
@@ -386,7 +386,7 @@ def run(job_name: str, lookback_days: int | None = None) -> int:
     days = lookback_days if force else DEFAULT_LOOKBACK_DAYS
     try:
         return JOBS[job_name](now, days, force)
-    except (alerts.BatchFailure, sources.SourceError) as exc:
+    except (rules.BatchFailure, sources.SourceError) as exc:
         _log(job=job_name, status=JobStatus.FAILURE.value, error=str(exc))
         return 1
     except psycopg.Error as exc:
