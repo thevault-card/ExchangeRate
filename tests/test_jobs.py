@@ -89,8 +89,10 @@ def jobtest_route(monkeypatch):
 
 
 def _log_lines(capsys):
-    out = capsys.readouterr().out.strip().splitlines()
-    return [json.loads(line) for line in out if line]
+    """찍힌 JSON 로그 줄 전부. 실패는 stderr 로 나가므로 둘 다 읽는다(logs.py)."""
+    captured = capsys.readouterr()
+    lines = (captured.out + captured.err).strip().splitlines()
+    return [json.loads(line) for line in lines if line]
 
 
 def _raise_source_error(code, days):

@@ -31,7 +31,7 @@ cron 18:30 KST  →  run_all.sh evening  →  index_kospi, fx_daily
 - **금액은 전부 `Decimal`** 입니다. `float`을 거치면 정밀도가 깨집니다. JPY는 100엔당 값이라 100으로 나눠 1엔당으로 정규화합니다.
 - **잠정치는 확정값을 못 덮어씁니다.** 코스피는 yfinance 잠정값(`source='yfinance'`)이고, 나중에 공공데이터포털 확정값으로 교체할 예정입니다. UPSERT에 방향 규칙이 걸려 있어 역전되지 않습니다.
 
-로그는 stdout에 JSON 한 줄씩 나갑니다.
+로그는 JSON 한 줄씩 나갑니다. **실패는 stderr, 나머지는 stdout** — cron이 stderr에 뭔가 있으면 `MAILTO`로 보내므로 이 구분이 곧 알림 경로입니다.
 
 ```json
 {"ts":"2026-08-13T18:30:04+09:00","job":"index_kospi","status":"success","fetched":4,"written":1,"latest_close":"6579.04"}
@@ -88,7 +88,7 @@ src/collector/
   sources.py        ② 외부 호출 (yfinance·수출입은행). 재시도·정밀도·값 검증
   db.py             ③ 적재 (UPSERT). 멱등 규칙과 잠정/확정 방향 규칙
   config.py         설정·상수 (통화 매핑, 캘린더 매핑, 테이블명)
-  logs.py           stdout JSON 한 줄
+  logs.py           JSON 한 줄 (실패는 stderr, 나머지는 stdout)
 scripts/run_all.sh  cron 진입점
 tests/              test_<모듈명>.py 로 1:1 대응
 ```
